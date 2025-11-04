@@ -83,6 +83,11 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         update (Update): Telegram update object
         context (ContextTypes.DEFAULT_TYPE): Bot context
     """
+    # Ignore messages from groups and supergroups
+    chat_type = update.effective_chat.type
+    if chat_type in ["group", "supergroup"]:
+        return
+    
     user_id = update.effective_user.id
     
     try:
@@ -156,6 +161,11 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         update (Update): Telegram update object
         context (ContextTypes.DEFAULT_TYPE): Bot context
     """
+    # Ignore messages from groups and supergroups
+    chat_type = update.effective_chat.type
+    if chat_type in ["group", "supergroup"]:
+        return
+    
     user_id = update.effective_user.id
     
     try:
@@ -195,6 +205,163 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         )
 
 
+async def get_chat_id(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    Handle /get_chat_id command.
+    
+    Shows the current chat ID (useful for getting group chat ID).
+    Works in both private chats and groups.
+    
+    Args:
+        update (Update): Telegram update object
+        context (ContextTypes.DEFAULT_TYPE): Bot context
+    """
+    user_id = update.effective_user.id
+    
+    try:
+        chat = update.effective_chat
+        chat_id = chat.id
+        chat_type = chat.type
+        
+        # Determine chat type display name
+        type_names = {
+            'private': 'Личный чат',
+            'group': 'Группа',
+            'supergroup': 'Супергруппа',
+            'channel': 'Канал'
+        }
+        chat_type_display = type_names.get(chat_type, chat_type)
+        
+        # Get chat title/username if available
+        chat_title = ""
+        if chat.title:
+            chat_title = f"\n📝 <b>Название:</b> {chat.title}"
+        elif chat.username:
+            chat_title = f"\n👤 <b>Username:</b> @{chat.username}"
+        
+        # Check if user is admin and if this is a group/supergroup
+        is_group = chat_type in ('group', 'supergroup')
+        is_admin_user = is_admin(user_id)
+        
+        # Import current GROUP_CHAT_ID to check
+        from .config import GROUP_CHAT_ID
+        
+        message = (
+            f"🆔 <b>Информация о чате</b>\n\n"
+            f"💬 <b>Тип чата:</b> {chat_type_display}\n"
+            f"🔢 <b>Chat ID:</b> <code>{chat_id}</code>{chat_title}\n\n"
+        )
+        
+        # Add instructions for groups
+        if is_group:
+            if GROUP_CHAT_ID and str(chat_id) == str(GROUP_CHAT_ID):
+                message += "✅ <b>Этот Chat ID уже настроен для уведомлений!</b>\n\n"
+            elif is_admin_user:
+                message += (
+                    f"📌 <b>Для настройки уведомлений:</b>\n"
+                    f"Отправьте команду <code>/set_group_chat_id</code> в этой группе,\n"
+                    f"чтобы автоматически установить этот Chat ID для уведомлений.\n\n"
+                )
+            else:
+                message += (
+                    f"📋 Скопируйте Chat ID выше и передайте администратору\n"
+                    f"для настройки уведомлений в группу.\n\n"
+                )
+        else:
+            message += "📋 Скопируйте Chat ID выше для использования в конфигурации.\n\n"
+        
+        if not GROUP_CHAT_ID:
+            message += "⚠️ <b>GROUP_CHAT_ID не настроен!</b> Уведомления не отправляются."
+        
+        await update.message.reply_text(message, parse_mode='HTML')
+        logger.info(f"User {user_id} requested chat ID: {chat_id} (type: {chat_type})")
+        
+    except Exception as e:
+        logger.error(f"Error in get_chat_id command: {str(e)}", user_id)
+        await update.message.reply_text(
+            "❌ Произошла ошибка при получении Chat ID. Попробуйте еще раз."
+        )
+
+
+async def set_group_chat_id(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    Handle /set_group_chat_id command (admin only).
+    
+    Sets the GROUP_CHAT_ID for notifications from the current chat.
+    Works only in groups/supergroups and only for admins.
+    
+    Args:
+        update (Update): Telegram update object
+        context (ContextTypes.DEFAULT_TYPE): Bot context
+    """
+    user_id = update.effective_user.id
+    
+    try:
+        # Check if user is admin
+        if not is_admin(user_id):
+            await update.message.reply_text(
+                "❌ Эта команда доступна только администраторам."
+            )
+            return
+        
+        chat = update.effective_chat
+        chat_id = chat.id
+        chat_type = chat.type
+        
+        # Check if this is a group or supergroup
+        if chat_type not in ('group', 'supergroup'):
+            await update.message.reply_text(
+                "❌ Эта команда работает только в группах и супергруппах.\n\n"
+                "Используйте команду <code>/get_chat_id</code> в группе для получения Chat ID.",
+                parse_mode='HTML'
+            )
+            return
+        
+        # Read or create .env file (in project root)
+        import os
+        # Get project root directory (parent of romano_bot directory)
+        project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        env_file_path = os.path.join(project_root, '.env')
+        
+        # Read existing .env file if it exists
+        env_vars = {}
+        if os.path.exists(env_file_path):
+            with open(env_file_path, 'r', encoding='utf-8') as f:
+                for line in f:
+                    line = line.strip()
+                    if line and not line.startswith('#') and '=' in line:
+                        key, value = line.split('=', 1)
+                        env_vars[key.strip()] = value.strip()
+        
+        # Update GROUP_CHAT_ID
+        env_vars['GROUP_CHAT_ID'] = str(chat_id)
+        
+        # Write back to .env file
+        with open(env_file_path, 'w', encoding='utf-8') as f:
+            for key, value in env_vars.items():
+                f.write(f"{key}={value}\n")
+        
+        chat_title = f" ({chat.title})" if chat.title else ""
+        
+        message = (
+            f"✅ <b>GROUP_CHAT_ID успешно установлен!</b>\n\n"
+            f"🔢 <b>Chat ID:</b> <code>{chat_id}</code>{chat_title}\n\n"
+            f"📝 Настройка сохранена в файл <code>.env</code>\n\n"
+            f"⚠️ <b>Важно:</b> Перезапустите бота, чтобы изменения вступили в силу.\n"
+            f"Используйте команду <code>python stop_bot.py</code>, затем <code>python run_bot.py</code>"
+        )
+        
+        await update.message.reply_text(message, parse_mode='HTML')
+        logger.info(f"Admin {user_id} set GROUP_CHAT_ID to {chat_id} in {chat_type}")
+        
+    except Exception as e:
+        logger.error(f"Error in set_group_chat_id command: {str(e)}", user_id)
+        await update.message.reply_text(
+            f"❌ Произошла ошибка при установке GROUP_CHAT_ID: {str(e)}\n\n"
+            "Попробуйте установить GROUP_CHAT_ID вручную через переменную окружения или файл .env"
+        )
+
+
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """
     Handle text messages from users.
@@ -206,10 +373,24 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         update (Update): Telegram update object
         context (ContextTypes.DEFAULT_TYPE): Bot context
     """
+    # Ignore messages from groups and supergroups
+    chat_type = update.effective_chat.type
+    if chat_type in ["group", "supergroup"]:
+        return
+    
     user_id = update.effective_user.id
     
     try:
         logger.info(f"User {user_id} sent message: {update.message.text}")
+        
+        # Handle /get_chat_id, /chatid, and /set_group_chat_id commands as fallback
+        text = update.message.text
+        if text in ['/get_chat_id', '/chatid']:
+            await get_chat_id(update, context)
+            return
+        elif text == '/set_group_chat_id':
+            await set_group_chat_id(update, context)
+            return
         
         # Get user from database
         user = AuthManager.get_user(user_id)
@@ -263,6 +444,23 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             # Clear any active state
             context.user_data.pop('state', None)
             await balance_handler.show_balance_menu(update, context)
+            return
+        elif text == '🔙 Назад к продажам':
+            # Clear any active state
+            context.user_data.pop('state', None)
+            context.user_data.pop('sale_data', None)
+            await sales_handler.show_sales_menu(update, context)
+            return
+        elif text == '🔙 Назад к расходам':
+            # Clear any active state
+            context.user_data.pop('state', None)
+            context.user_data.pop('expense_data', None)
+            await expenses_handler.show_expenses_menu(update, context)
+            return
+        elif text == '🔙 Назад к отчетам':
+            # Clear any active state
+            context.user_data.pop('state', None)
+            await reports_handler.show_reports_menu(update, context)
             return
         
         # Handle state-based responses
@@ -441,22 +639,51 @@ async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     Handle errors that occur during bot operation.
     
     Logs errors and attempts to send error message to user.
+    Handles critical errors like bot conflicts.
     
     Args:
         update (Update): Telegram update object
         context (ContextTypes.DEFAULT_TYPE): Bot context
     """
     user_id = update.effective_user.id if update and update.effective_user else None
-    logger.error(f"Update {update} caused error {context.error}", user_id)
+    error = context.error
     
-    # Try to send error message to user
-    if update and update.message:
-        try:
-            await update.message.reply_text(
-                "❌ Произошла внутренняя ошибка. Попробуйте еще раз или обратитесь к администратору."
+    # Handle critical errors that require bot shutdown
+    if error and isinstance(error, Exception):
+        error_str = str(error)
+        
+        # Check for bot conflict error
+        if "Conflict" in error_str and "getUpdates" in error_str:
+            logger.critical(
+                f"Bot conflict detected: {error_str}\n"
+                "Another bot instance is running. Please stop all bot instances and restart.",
+                user_id
             )
-        except Exception as e:
-            logger.error(f"Failed to send error message to user: {str(e)}", user_id)
+            logger.critical(
+                "⚠️  CRITICAL: Multiple bot instances detected!\n"
+                "Run 'python stop_bot.py' to stop all instances, then restart the bot."
+            )
+            # Don't try to stop application here - it may not be running yet
+            # The conflict will be caught in run_polling() and handled there
+            return
+        
+        # Log other errors
+        logger.error(f"Update {update} caused error: {error_str}", user_id, exc_info=True)
+    else:
+        logger.error(f"Update {update} caused error {error}", user_id)
+    
+    # Try to send error message to user (only for non-critical errors)
+    if update and update.message and error:
+        error_str = str(error) if error else "Unknown error"
+        
+        # Don't send user message for conflict errors
+        if "Conflict" not in error_str or "getUpdates" not in error_str:
+            try:
+                await update.message.reply_text(
+                    "❌ Произошла внутренняя ошибка. Попробуйте еще раз или обратитесь к администратору."
+                )
+            except Exception as e:
+                logger.error(f"Failed to send error message to user: {str(e)}", user_id)
 
 
 def main() -> None:
@@ -512,6 +739,9 @@ def main() -> None:
         try:
             application.add_handler(CommandHandler("start", start))
             application.add_handler(CommandHandler("help", help_command))
+            application.add_handler(CommandHandler("get_chat_id", get_chat_id))
+            application.add_handler(CommandHandler("chatid", get_chat_id))  # Alias for convenience
+            application.add_handler(CommandHandler("set_group_chat_id", set_group_chat_id))
             application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
             application.add_error_handler(error_handler)
             logger.info("Handlers added successfully")
@@ -523,17 +753,46 @@ def main() -> None:
         logger.info("Starting bot polling...")
         logger.info("Bot is now running. Press Ctrl+C to stop.")
         
+        conflict_detected = False
         try:
-            application.run_polling()
+            application.run_polling(
+                drop_pending_updates=True,  # Drop pending updates on start
+                allowed_updates=None
+            )
         except KeyboardInterrupt:
             logger.info("Received KeyboardInterrupt, stopping bot...")
         except Exception as e:
-            logger.error(f"Error during bot execution: {e}")
+            error_str = str(e)
+            if "Conflict" in error_str and "getUpdates" in error_str:
+                conflict_detected = True
+                logger.critical(
+                    f"Bot conflict error detected: {error_str}\n"
+                    "Please stop all running bot instances using 'python stop_bot.py'"
+                )
+                print("\n" + "=" * 60)
+                print("❌ ОШИБКА: Запущено несколько экземпляров бота!")
+                print("=" * 60)
+                print("\nДействия для исправления:")
+                print("1. Остановите все экземпляры командой: python stop_bot.py")
+                print("2. Убедитесь, что файл .bot.lock удален")
+                print("3. Запустите бота снова: python run_bot.py")
+                print("\n" + "=" * 60)
+            else:
+                logger.error(f"Error during bot execution: {e}", exc_info=True)
         finally:
-            lock.release()
+            # Release lock
+            try:
+                lock.release()
+            except Exception as e:
+                logger.error(f"Error releasing lock: {e}")
+            
             logger.info("=" * 50)
             logger.info("Romano Bot stopped")
             logger.info("=" * 50)
+            
+            # Exit with error code if conflict was detected
+            if conflict_detected:
+                sys.exit(1)
     
     except RuntimeError as e:
         # Lock acquisition failed

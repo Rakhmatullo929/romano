@@ -246,8 +246,14 @@ def format_currency(amount: Union[Decimal, float, int]) -> str:
     if isinstance(amount, (int, float)):
         amount = Decimal(str(amount))
     
-    # Format with thousands separator
-    formatted = f"{amount:,.2f}".replace(',', ' ')
+    # Check if amount is a whole number (no decimal part)
+    if amount % 1 == 0:
+        # Format without decimal part
+        formatted = f"{int(amount):,}".replace(',', ' ')
+    else:
+        # Format with decimal part
+        formatted = f"{amount:,.2f}".replace(',', ' ')
+    
     return f"{formatted} {CURRENCY_SYMBOL}"
 
 

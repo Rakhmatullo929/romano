@@ -8,7 +8,7 @@ from datetime import datetime, timedelta
 
 from ..models.schema import Sale, Expense, Balance
 from ..services.database import get_session
-from ..utils.helpers import format_currency
+from ..utils.helpers import format_currency, logger
 
 
 class BalanceHandler:
@@ -21,19 +21,76 @@ class BalanceHandler:
             ['🔙 Главное меню']
         ], resize_keyboard=True)
         
+        self.admin_keyboard = ReplyKeyboardMarkup([
+            ['💰 Текущий баланс', '📊 История операций'],
+            ['💵 Пополнить баланс', '💸 Снять средства'],
+            ['📅 День', '📈 Неделя', '📊 Месяц'],
+            ['🔙 Главное меню']
+        ], resize_keyboard=True)
+        
         self.period_keyboard = ReplyKeyboardMarkup([
             ['📅 День', '📈 Неделя', '📊 Месяц'],
             ['🔙 Назад к балансу']
         ], resize_keyboard=True)
     
+    def get_current_balance_amount(self) -> float:
+        """
+        Calculate current balance from all transactions.
+        
+        Returns:
+            float: Current balance amount
+        """
+        try:
+            with get_session() as session:
+                transactions = session.query(Balance).all()
+                balance = 0.0
+                for transaction in transactions:
+                    if transaction.transaction_type == 'income':
+                        balance += float(transaction.amount)
+                    elif transaction.transaction_type == 'expense':
+                        balance -= float(transaction.amount)
+                return balance
+        except Exception as e:
+            logger.error(f"Error calculating balance: {str(e)}")
+            return 0.0
+    
     async def show_balance_menu(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Show balance main menu"""
-        await update.message.reply_text(
-            "💰 <b>Баланс</b>\n\n"
-            "Выберите действие:",
-            reply_markup=self.main_keyboard,
-            parse_mode='HTML'
-        )
+        user_id = update.effective_user.id
+        user = getattr(context, 'user', None)
+        
+        # If user not in context, get from database
+        if not user:
+            from ..utils.helpers import AuthManager
+            user = AuthManager.get_user(user_id)
+        
+        # Get current balance
+        current_balance = self.get_current_balance_amount()
+        
+        # Check if user is admin
+        is_admin = user and user.is_admin() if user else False
+        
+        # Create menu based on user role
+        if is_admin:
+            message = (
+                f"💰 <b>Баланс</b>\n\n"
+                f"💵 <b>Текущий баланс:</b> {format_currency(current_balance)}\n\n"
+                f"Выберите действие:"
+            )
+            await update.message.reply_text(
+                message,
+                reply_markup=self.admin_keyboard,
+                parse_mode='HTML'
+            )
+        else:
+            # Regular user menu
+            await update.message.reply_text(
+                f"💰 <b>Баланс</b>\n\n"
+                f"💵 <b>Текущий баланс:</b> {format_currency(current_balance)}\n\n"
+                f"Выберите действие:",
+                reply_markup=self.main_keyboard,
+                parse_mode='HTML'
+            )
     
     async def show_balance_data(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Show balance data for selected period"""
@@ -87,14 +144,34 @@ class BalanceHandler:
                     Expense.created_at <= end_date
                 ).all()
                 
+                # Extract data to simple structures before session closes
+                sales_data = [
+                    {
+                        'product_name': sale.product_name,
+                        'quantity': int(sale.quantity),
+                        'total_amount': float(sale.total_amount),
+                        'created_at': sale.created_at.date()
+                    }
+                    for sale in sales
+                ]
+                
+                expenses_data = [
+                    {
+                        'category': expense.category,
+                        'amount': float(expense.amount),
+                        'created_at': expense.created_at.date()
+                    }
+                    for expense in expenses
+                ]
+                
                 # Calculate totals
-                total_sales = sum(sale.total_amount for sale in sales)
-                total_expenses = sum(expense.amount for expense in expenses)
+                total_sales = sum(sale['total_amount'] for sale in sales_data)
+                total_expenses = sum(expense['amount'] for expense in expenses_data)
                 profit = total_sales - total_expenses
                 
                 # Get additional statistics
-                sales_count = len(sales)
-                expenses_count = len(expenses)
+                sales_count = len(sales_data)
+                expenses_count = len(expenses_data)
                 avg_sale = total_sales / sales_count if sales_count > 0 else 0
                 avg_expense = total_expenses / expenses_count if expenses_count > 0 else 0
             
@@ -144,11 +221,11 @@ class BalanceHandler:
             if period == 'day' and sales_count > 0:
                 # Show top products for day
                 product_sales = {}
-                for sale in sales:
-                    if sale.product_name not in product_sales:
-                        product_sales[sale.product_name] = {'quantity': 0, 'amount': 0}
-                    product_sales[sale.product_name]['quantity'] += sale.quantity
-                    product_sales[sale.product_name]['amount'] += sale.total_amount
+                for sale in sales_data:
+                    if sale['product_name'] not in product_sales:
+                        product_sales[sale['product_name']] = {'quantity': 0, 'amount': 0}
+                    product_sales[sale['product_name']]['quantity'] += sale['quantity']
+                    product_sales[sale['product_name']]['amount'] += sale['total_amount']
                 
                 top_products = sorted(product_sales.items(), key=lambda x: x[1]['amount'], reverse=True)[:3]
                 if top_products:
@@ -163,15 +240,15 @@ class BalanceHandler:
                     day = end_date - timedelta(days=i)
                     daily_data[day] = {'sales': 0, 'expenses': 0, 'profit': 0}
                 
-                for sale in sales:
-                    day = sale.created_at.date()
+                for sale in sales_data:
+                    day = sale['created_at']
                     if day in daily_data:
-                        daily_data[day]['sales'] += sale.total_amount
+                        daily_data[day]['sales'] += sale['total_amount']
                 
-                for expense in expenses:
-                    day = expense.created_at.date()
+                for expense in expenses_data:
+                    day = expense['created_at']
                     if day in daily_data:
-                        daily_data[day]['expenses'] += expense.amount
+                        daily_data[day]['expenses'] += expense['amount']
                 
                 for day in daily_data:
                     daily_data[day]['profit'] = daily_data[day]['sales'] - daily_data[day]['expenses']
@@ -186,11 +263,11 @@ class BalanceHandler:
             elif period == 'month' and sales_count > 0:
                 # Show top products and categories for month
                 product_sales = {}
-                for sale in sales:
-                    if sale.product_name not in product_sales:
-                        product_sales[sale.product_name] = {'quantity': 0, 'amount': 0}
-                    product_sales[sale.product_name]['quantity'] += sale.quantity
-                    product_sales[sale.product_name]['amount'] += sale.total_amount
+                for sale in sales_data:
+                    if sale['product_name'] not in product_sales:
+                        product_sales[sale['product_name']] = {'quantity': 0, 'amount': 0}
+                    product_sales[sale['product_name']]['quantity'] += sale['quantity']
+                    product_sales[sale['product_name']]['amount'] += sale['total_amount']
                 
                 top_products = sorted(product_sales.items(), key=lambda x: x[1]['amount'], reverse=True)[:3]
                 if top_products:
@@ -200,10 +277,10 @@ class BalanceHandler:
                 
                 # Show top expense categories
                 category_expenses = {}
-                for expense in expenses:
-                    if expense.category not in category_expenses:
-                        category_expenses[expense.category] = 0
-                    category_expenses[expense.category] += expense.amount
+                for expense in expenses_data:
+                    if expense['category'] not in category_expenses:
+                        category_expenses[expense['category']] = 0
+                    category_expenses[expense['category']] += expense['amount']
                 
                 top_categories = sorted(category_expenses.items(), key=lambda x: x[1], reverse=True)[:3]
                 if top_categories:
@@ -249,12 +326,37 @@ class BalanceHandler:
         return start_date, end_date, period_name
     
     async def get_current_balance(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        """Get current balance - show day data"""
-        context.user_data['balance_period'] = 'day'
-        await self._show_balance_data(update, context, 'day')
+        """Get current balance amount"""
+        user_id = update.effective_user.id
+        user = getattr(context, 'user', None)
+        
+        # If user not in context, get from database
+        if not user:
+            from ..utils.helpers import AuthManager
+            user = AuthManager.get_user(user_id)
+        
+        current_balance = self.get_current_balance_amount()
+        
+        # Use admin keyboard if user is admin
+        keyboard = self.admin_keyboard if user and user.is_admin() else self.main_keyboard
+        
+        await update.message.reply_text(
+            f"💰 <b>Текущий баланс</b>\n\n"
+            f"💵 <b>Баланс:</b> {format_currency(current_balance)}",
+            reply_markup=keyboard,
+            parse_mode='HTML'
+        )
     
     async def get_transaction_history(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Get transaction history"""
+        user_id = update.effective_user.id
+        user = getattr(context, 'user', None)
+        
+        # If user not in context, get from database
+        if not user:
+            from ..utils.helpers import AuthManager
+            user = AuthManager.get_user(user_id)
+        
         with get_session() as session:
             # Get recent transactions
             recent_balance = session.query(Balance).order_by(
@@ -262,33 +364,63 @@ class BalanceHandler:
             ).limit(20).all()
             
             if not recent_balance:
+                keyboard = self.admin_keyboard if user and user.is_admin() else self.main_keyboard
                 await update.message.reply_text(
                     "📊 <b>История операций</b>\n\n"
                     "Операций не найдено",
-                    reply_markup=self.main_keyboard,
+                    reply_markup=keyboard,
                     parse_mode='HTML'
                 )
                 return
             
-            message = f"📊 <b>История операций</b>\n\n"
+            # Extract data to simple structures before session closes
+            balance_data = [
+                {
+                    'amount': float(record.amount),
+                    'transaction_type': record.transaction_type,
+                    'description': record.description,
+                    'created_at': record.created_at
+                }
+                for record in recent_balance
+            ]
+        
+        # Build message outside session context
+        message = f"📊 <b>История операций</b>\n\n"
+        
+        for record in balance_data:
+            amount_str = format_currency(record['amount'])
+            if record['transaction_type'] == 'income':
+                message += f"✅ {amount_str} - {record['description']}\n"
+            else:
+                message += f"❌ {amount_str} - {record['description']}\n"
             
-            for record in recent_balance:
-                amount_str = format_currency(record.amount)
-                if record.transaction_type == 'income':
-                    message += f"✅ {amount_str} - {record.description}\n"
-                else:
-                    message += f"❌ {amount_str} - {record.description}\n"
-                
-                message += f"   {record.created_at.strftime('%d.%m.%Y %H:%M')}\n\n"
-            
-            await update.message.reply_text(
-                message,
-                reply_markup=self.main_keyboard,
-                parse_mode='HTML'
-            )
+            message += f"   {record['created_at'].strftime('%d.%m.%Y %H:%M')}\n\n"
+        
+        keyboard = self.admin_keyboard if user and user.is_admin() else self.main_keyboard
+        await update.message.reply_text(
+            message,
+            reply_markup=keyboard,
+            parse_mode='HTML'
+        )
     
     async def add_income(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        """Add income transaction"""
+        """Add income transaction (admin only)"""
+        user_id = update.effective_user.id
+        user = getattr(context, 'user', None)
+        
+        # If user not in context, get from database
+        if not user:
+            from ..utils.helpers import AuthManager
+            user = AuthManager.get_user(user_id)
+        
+        # Check if user is admin
+        if not user or not user.is_admin():
+            await update.message.reply_text(
+                "❌ Эта операция доступна только администраторам.",
+                reply_markup=self.admin_keyboard if user and user.is_admin() else self.main_keyboard
+            )
+            return
+        
         await update.message.reply_text(
             "💵 <b>Пополнение баланса</b>\n\n"
             "Введите данные в формате:\n"
@@ -299,7 +431,23 @@ class BalanceHandler:
         context.user_data['state'] = 'waiting_income_data'
     
     async def add_expense_transaction(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        """Add expense transaction"""
+        """Add expense transaction (admin only)"""
+        user_id = update.effective_user.id
+        user = getattr(context, 'user', None)
+        
+        # If user not in context, get from database
+        if not user:
+            from ..utils.helpers import AuthManager
+            user = AuthManager.get_user(user_id)
+        
+        # Check if user is admin
+        if not user or not user.is_admin():
+            await update.message.reply_text(
+                "❌ Эта операция доступна только администраторам.",
+                reply_markup=self.admin_keyboard if user and user.is_admin() else self.main_keyboard
+            )
+            return
+        
         await update.message.reply_text(
             "💸 <b>Снятие средств</b>\n\n"
             "Введите данные в формате:\n"
@@ -310,7 +458,24 @@ class BalanceHandler:
         context.user_data['state'] = 'waiting_expense_transaction_data'
     
     async def process_income_data(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        """Process income data input"""
+        """Process income data input (admin only)"""
+        user_id = update.effective_user.id
+        user = getattr(context, 'user', None)
+        
+        # If user not in context, get from database
+        if not user:
+            from ..utils.helpers import AuthManager
+            user = AuthManager.get_user(user_id)
+        
+        # Check if user is admin
+        if not user or not user.is_admin():
+            await update.message.reply_text(
+                "❌ Эта операция доступна только администраторам.",
+                reply_markup=self.admin_keyboard if user and user.is_admin() else self.main_keyboard
+            )
+            context.user_data.pop('state', None)
+            return
+        
         try:
             data = update.message.text.strip()
             parts = [part.strip() for part in data.split('|')]
@@ -334,25 +499,52 @@ class BalanceHandler:
                 session.add(balance_record)
                 session.commit()
             
+            # Get updated balance
+            current_balance = self.get_current_balance_amount()
+            
             await update.message.reply_text(
-                f"✅ <b>Доход добавлен!</b>\n\n"
-                f"Сумма: {format_currency(amount)}\n"
-                f"Описание: {description}",
-                reply_markup=self.main_keyboard,
+                f"✅ <b>Баланс пополнен!</b>\n\n"
+                f"💵 <b>Сумма пополнения:</b> {format_currency(amount)}\n"
+                f"📝 <b>Описание:</b> {description}\n\n"
+                f"💰 <b>Текущий баланс:</b> {format_currency(current_balance)}",
+                reply_markup=self.admin_keyboard,
                 parse_mode='HTML'
             )
             
             context.user_data.pop('state', None)
             
         except Exception as e:
+            user_id = update.effective_user.id
+            user = getattr(context, 'user', None)
+            if not user:
+                from ..utils.helpers import AuthManager
+                user = AuthManager.get_user(user_id)
+            keyboard = self.admin_keyboard if user and user.is_admin() else self.main_keyboard
             await update.message.reply_text(
                 f"❌ Ошибка: {str(e)}\n\n"
                 "Попробуйте еще раз в правильном формате.",
-                reply_markup=self.main_keyboard
+                reply_markup=keyboard
             )
     
     async def process_expense_transaction_data(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        """Process expense transaction data input"""
+        """Process expense transaction data input (admin only)"""
+        user_id = update.effective_user.id
+        user = getattr(context, 'user', None)
+        
+        # If user not in context, get from database
+        if not user:
+            from ..utils.helpers import AuthManager
+            user = AuthManager.get_user(user_id)
+        
+        # Check if user is admin
+        if not user or not user.is_admin():
+            await update.message.reply_text(
+                "❌ Эта операция доступна только администраторам.",
+                reply_markup=self.admin_keyboard if user and user.is_admin() else self.main_keyboard
+            )
+            context.user_data.pop('state', None)
+            return
+        
         try:
             data = update.message.text.strip()
             parts = [part.strip() for part in data.split('|')]
@@ -376,19 +568,29 @@ class BalanceHandler:
                 session.add(balance_record)
                 session.commit()
             
+            # Get updated balance
+            current_balance = self.get_current_balance_amount()
+            
             await update.message.reply_text(
-                f"✅ <b>Расход добавлен!</b>\n\n"
-                f"Сумма: {format_currency(amount)}\n"
-                f"Описание: {description}",
-                reply_markup=self.main_keyboard,
+                f"✅ <b>Средства сняты!</b>\n\n"
+                f"💸 <b>Сумма снятия:</b> {format_currency(amount)}\n"
+                f"📝 <b>Описание:</b> {description}\n\n"
+                f"💰 <b>Текущий баланс:</b> {format_currency(current_balance)}",
+                reply_markup=self.admin_keyboard,
                 parse_mode='HTML'
             )
             
             context.user_data.pop('state', None)
             
         except Exception as e:
+            user_id = update.effective_user.id
+            user = getattr(context, 'user', None)
+            if not user:
+                from ..utils.helpers import AuthManager
+                user = AuthManager.get_user(user_id)
+            keyboard = self.admin_keyboard if user and user.is_admin() else self.main_keyboard
             await update.message.reply_text(
                 f"❌ Ошибка: {str(e)}\n\n"
                 "Попробуйте еще раз в правильном формате.",
-                reply_markup=self.main_keyboard
+                reply_markup=keyboard
             )

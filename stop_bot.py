@@ -18,12 +18,18 @@ def find_bot_processes():
         
         processes = []
         for line in result.stdout.split('\n'):
-            if 'run_bot.py' in line and 'grep' not in line:
-                # Parse the line to get PID
-                parts = line.split()
-                if len(parts) > 1:
-                    pid = int(parts[1])
-                    processes.append(pid)
+            # Check for both run_bot.py and romano_bot processes
+            if ('run_bot.py' in line or 'romano_bot' in line or 'python' in line) and 'grep' not in line:
+                # Check if it's actually the bot process
+                if 'main.py' in line or 'run_bot.py' in line or 'romano_bot/main.py' in line:
+                    # Parse the line to get PID
+                    parts = line.split()
+                    if len(parts) > 1:
+                        try:
+                            pid = int(parts[1])
+                            processes.append(pid)
+                        except (ValueError, IndexError):
+                            pass
         
         return processes
     except Exception as e:

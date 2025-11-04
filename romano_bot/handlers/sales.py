@@ -12,10 +12,11 @@ from telegram.ext import ContextTypes
 from decimal import Decimal
 from datetime import datetime
 
-from ..models.schema import Sale
+from ..models.schema import Sale, Balance
 from ..services.database import get_session
 from ..utils.helpers import format_currency, logger
 from ..config import PRODUCT_PRICES
+from ..services.notifier import notify_group, format_sale_notification
 
 
 class SalesHandler:
@@ -171,8 +172,9 @@ class SalesHandler:
         logger.info(f"User {user_id} discount choice: {choice}")
         
         if choice == "✅ Да":
+            subtotal = context.user_data['sale_data']['subtotal']
             await update.message.reply_text(
-                "Введите процент скидки (от 1 до 50):",
+                f"Введите сумму скидки (максимум {format_currency(subtotal)}):",
                 reply_markup=ReplyKeyboardRemove()
             )
             context.user_data['state'] = 'entering_discount'
@@ -191,29 +193,34 @@ class SalesHandler:
             )
     
     async def handle_discount_input(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        """Handle discount percentage input"""
+        """Handle discount amount input"""
         user_id = update.effective_user.id
         logger.info(f"Handling discount input for user {user_id}: {update.message.text}")
         
         try:
-            discount_percent = float(update.message.text.strip())
-            
-            if discount_percent < 0 or discount_percent > 50:
-                raise ValueError("Скидка должна быть от 0 до 50 процентов")
-            
-            # Calculate discount
+            discount_amount = float(update.message.text.strip())
             subtotal = context.user_data['sale_data']['subtotal']
-            discount_amount = subtotal * (discount_percent / 100)
+            
+            if discount_amount < 0:
+                raise ValueError("Скидка не может быть отрицательной")
+            
+            if discount_amount > subtotal:
+                raise ValueError(f"Скидка не может быть больше суммы без скидки ({format_currency(subtotal)})")
+            
+            # Calculate total amount
             total_amount = subtotal - discount_amount
             
+            if total_amount < 0:
+                raise ValueError("Итоговая сумма не может быть отрицательной")
+            
             # Store discount data
-            context.user_data['sale_data']['discount_percent'] = discount_percent
+            context.user_data['sale_data']['discount_percent'] = 0  # Не используем проценты, но сохраняем для совместимости
             context.user_data['sale_data']['discount_amount'] = discount_amount
             context.user_data['sale_data']['total_amount'] = total_amount
             
             await update.message.reply_text(
-                f"🎯 <b>Скидка:</b> {discount_percent}%\n"
-                f"💰 <b>Сумма скидки:</b> {format_currency(discount_amount)}\n"
+                f"🎯 <b>Сумма скидки:</b> {format_currency(discount_amount)}\n"
+                f"💰 <b>Сумма без скидки:</b> {format_currency(subtotal)}\n"
                 f"💵 <b>Итого к оплате:</b> {format_currency(total_amount)}\n\n"
                 "Выберите способ оплаты:",
                 reply_markup=self.payment_keyboard,
@@ -222,9 +229,17 @@ class SalesHandler:
             context.user_data['state'] = 'selecting_payment'
             
         except ValueError as e:
+            subtotal = context.user_data['sale_data']['subtotal']
             await update.message.reply_text(
                 f"❌ Ошибка: {str(e)}\n\n"
-                "Введите корректный процент скидки (от 0 до 50):",
+                f"Введите корректную сумму скидки (максимум {format_currency(subtotal)}):",
+                reply_markup=ReplyKeyboardRemove()
+            )
+        except Exception as e:
+            subtotal = context.user_data['sale_data']['subtotal']
+            await update.message.reply_text(
+                f"❌ Ошибка: Введите корректное число.\n\n"
+                f"Введите сумму скидки (максимум {format_currency(subtotal)}):",
                 reply_markup=ReplyKeyboardRemove()
             )
     
@@ -270,9 +285,8 @@ class SalesHandler:
         message += f"💰 <b>Цена за единицу:</b> {format_currency(sale_data['unit_price'])}\n"
         message += f"💵 <b>Сумма без скидки:</b> {format_currency(sale_data['subtotal'])}\n"
         
-        if sale_data.get('discount_percent', 0) > 0:
-            message += f"🎯 <b>Скидка:</b> {sale_data['discount_percent']}%\n"
-            message += f"💸 <b>Сумма скидки:</b> {format_currency(sale_data['discount_amount'])}\n"
+        if sale_data.get('discount_amount', 0) > 0:
+            message += f"🎯 <b>Сумма скидки:</b> {format_currency(sale_data['discount_amount'])}\n"
         
         message += f"💳 <b>Способ оплаты:</b> {sale_data['payment_method']}\n"
         message += f"💵 <b>Итого к оплате:</b> {format_currency(sale_data['total_amount'])}\n\n"
@@ -321,7 +335,47 @@ class SalesHandler:
                     payment_method=sale_data['payment_method']
                 )
                 session.add(sale)
+                session.flush()  # Flush to get sale.id
+                
+                # Create balance transaction for sale
+                balance_record = Balance(
+                    amount=sale_data['total_amount'],
+                    transaction_type='income',
+                    description=f"Продажа: {sale_data['product_name']} ({sale_data['quantity']} шт.)",
+                    reference_id=sale.id,
+                    reference_type='sale'
+                )
+                session.add(balance_record)
                 session.commit()
+            
+            # Get user information for notification
+            user = getattr(context, 'user', None)
+            if not user:
+                from ..utils.helpers import AuthManager
+                user = AuthManager.get_user(update.effective_user.id)
+            
+            # Get username or first_name
+            username = user.first_name if user and user.first_name else (
+                user.username if user and user.username else (
+                    update.effective_user.first_name or update.effective_user.username or 'Неизвестный пользователь'
+                )
+            )
+            
+            # Send notification to group
+            sale_timestamp = datetime.now()
+            notification_message = format_sale_notification(
+                username=username,
+                product_name=sale_data['product_name'],
+                quantity=sale_data['quantity'],
+                total_price=sale_data['total_amount'],
+                timestamp=sale_timestamp
+            )
+            await notify_group(context, notification_message)
+            
+            # Get current balance
+            from .balance import BalanceHandler
+            balance_handler = BalanceHandler()
+            current_balance = balance_handler.get_current_balance_amount()
             
             # Success message
             message = "✅ <b>Продажа успешно добавлена!</b>\n\n"
@@ -329,7 +383,8 @@ class SalesHandler:
             message += f"📦 <b>Количество:</b> {sale_data['quantity']} шт.\n"
             message += f"💵 <b>Итого:</b> {format_currency(sale_data['total_amount'])}\n"
             message += f"💳 <b>Оплата:</b> {sale_data['payment_method']}\n"
-            message += f"🕐 <b>Время:</b> {datetime.now().strftime('%d.%m.%Y %H:%M')}"
+            message += f"🕐 <b>Время:</b> {sale_timestamp.strftime('%d.%m.%Y %H:%M')}\n\n"
+            message += f"💰 <b>Текущий баланс:</b> {format_currency(current_balance)}"
             
             await update.message.reply_text(
                 message,
@@ -366,38 +421,50 @@ class SalesHandler:
                 )
                 return
             
-            total_amount = sum(sale.total_amount for sale in sales)
-            total_quantity = sum(sale.quantity for sale in sales)
-            total_discount = sum(sale.discount_amount or 0 for sale in sales)
-            
-            message = f"📊 <b>Продажи за сегодня</b>\n"
-            message += f"({today.strftime('%d.%m.%Y')})\n\n"
-            message += f"📈 <b>Общая статистика:</b>\n"
-            message += f"• Количество продаж: {len(sales)}\n"
-            message += f"• Общее количество товаров: {total_quantity}\n"
-            message += f"• Общая сумма: {format_currency(total_amount)}\n"
-            message += f"• Общая скидка: {format_currency(total_discount)}\n\n"
-            
-            # Group by product
-            product_stats = {}
-            for sale in sales:
-                if sale.product_name not in product_stats:
-                    product_stats[sale.product_name] = {
-                        'quantity': 0,
-                        'amount': 0
-                    }
-                product_stats[sale.product_name]['quantity'] += sale.quantity
-                product_stats[sale.product_name]['amount'] += sale.total_amount
-            
-            message += "📦 <b>По продуктам:</b>\n"
-            for product, stats in product_stats.items():
-                message += f"• {product}: {stats['quantity']} шт. = {format_currency(stats['amount'])}\n"
-            
-            await update.message.reply_text(
-                message,
-                reply_markup=self.main_keyboard,
-                parse_mode='HTML'
-            )
+            # Extract data to simple structures before session closes
+            sales_data = [
+                {
+                    'product_name': sale.product_name,
+                    'quantity': int(sale.quantity),
+                    'total_amount': float(sale.total_amount),
+                    'discount_amount': float(sale.discount_amount or 0)
+                }
+                for sale in sales
+            ]
+        
+        # Build message outside session context
+        total_amount = sum(sale['total_amount'] for sale in sales_data)
+        total_quantity = sum(sale['quantity'] for sale in sales_data)
+        total_discount = sum(sale['discount_amount'] for sale in sales_data)
+        
+        message = f"📊 <b>Продажи за сегодня</b>\n"
+        message += f"({today.strftime('%d.%m.%Y')})\n\n"
+        message += f"📈 <b>Общая статистика:</b>\n"
+        message += f"• Количество продаж: {len(sales_data)}\n"
+        message += f"• Общее количество товаров: {total_quantity}\n"
+        message += f"• Общая сумма: {format_currency(total_amount)}\n"
+        message += f"• Общая скидка: {format_currency(total_discount)}\n\n"
+        
+        # Group by product
+        product_stats = {}
+        for sale in sales_data:
+            if sale['product_name'] not in product_stats:
+                product_stats[sale['product_name']] = {
+                    'quantity': 0,
+                    'amount': 0
+                }
+            product_stats[sale['product_name']]['quantity'] += sale['quantity']
+            product_stats[sale['product_name']]['amount'] += sale['total_amount']
+        
+        message += "📦 <b>По продуктам:</b>\n"
+        for product, stats in product_stats.items():
+            message += f"• {product}: {stats['quantity']} шт. = {format_currency(stats['amount'])}\n"
+        
+        await update.message.reply_text(
+            message,
+            reply_markup=self.main_keyboard,
+            parse_mode='HTML'
+        )
     
     async def get_weekly_sales(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Get weekly sales report"""
@@ -421,22 +488,32 @@ class SalesHandler:
                 )
                 return
             
-            total_amount = sum(sale.total_amount for sale in sales)
-            total_quantity = sum(sale.quantity for sale in sales)
-            
-            message = f"📈 <b>Продажи за неделю</b>\n"
-            message += f"({start_date.strftime('%d.%m')} - {end_date.strftime('%d.%m.%Y')})\n\n"
-            message += f"📊 <b>Общая статистика:</b>\n"
-            message += f"• Количество продаж: {len(sales)}\n"
-            message += f"• Общее количество товаров: {total_quantity}\n"
-            message += f"• Общая сумма: {format_currency(total_amount)}\n"
-            message += f"• Средняя продажа: {format_currency(total_amount / len(sales))}\n\n"
-            
-            await update.message.reply_text(
-                message,
-                reply_markup=self.main_keyboard,
-                parse_mode='HTML'
-            )
+            # Extract data to simple structures before session closes
+            sales_data = [
+                {
+                    'quantity': int(sale.quantity),
+                    'total_amount': float(sale.total_amount)
+                }
+                for sale in sales
+            ]
+        
+        # Build message outside session context
+        total_amount = sum(sale['total_amount'] for sale in sales_data)
+        total_quantity = sum(sale['quantity'] for sale in sales_data)
+        
+        message = f"📈 <b>Продажи за неделю</b>\n"
+        message += f"({start_date.strftime('%d.%m')} - {end_date.strftime('%d.%m.%Y')})\n\n"
+        message += f"📊 <b>Общая статистика:</b>\n"
+        message += f"• Количество продаж: {len(sales_data)}\n"
+        message += f"• Общее количество товаров: {total_quantity}\n"
+        message += f"• Общая сумма: {format_currency(total_amount)}\n"
+        message += f"• Средняя продажа: {format_currency(total_amount / len(sales_data))}\n\n"
+        
+        await update.message.reply_text(
+            message,
+            reply_markup=self.main_keyboard,
+            parse_mode='HTML'
+        )
     
     async def get_monthly_sales(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Get monthly sales report"""
@@ -460,19 +537,29 @@ class SalesHandler:
                 )
                 return
             
-            total_amount = sum(sale.total_amount for sale in sales)
-            total_quantity = sum(sale.quantity for sale in sales)
-            
-            message = f"📅 <b>Продажи за месяц</b>\n"
-            message += f"({month_start.strftime('%B %Y')})\n\n"
-            message += f"📊 <b>Общая статистика:</b>\n"
-            message += f"• Количество продаж: {len(sales)}\n"
-            message += f"• Общее количество товаров: {total_quantity}\n"
-            message += f"• Общая сумма: {format_currency(total_amount)}\n"
-            message += f"• Средняя продажа: {format_currency(total_amount / len(sales))}\n\n"
-            
-            await update.message.reply_text(
-                message,
-                reply_markup=self.main_keyboard,
-                parse_mode='HTML'
-            )
+            # Extract data to simple structures before session closes
+            sales_data = [
+                {
+                    'quantity': int(sale.quantity),
+                    'total_amount': float(sale.total_amount)
+                }
+                for sale in sales
+            ]
+        
+        # Build message outside session context
+        total_amount = sum(sale['total_amount'] for sale in sales_data)
+        total_quantity = sum(sale['quantity'] for sale in sales_data)
+        
+        message = f"📅 <b>Продажи за месяц</b>\n"
+        message += f"({month_start.strftime('%B %Y')})\n\n"
+        message += f"📊 <b>Общая статистика:</b>\n"
+        message += f"• Количество продаж: {len(sales_data)}\n"
+        message += f"• Общее количество товаров: {total_quantity}\n"
+        message += f"• Общая сумма: {format_currency(total_amount)}\n"
+        message += f"• Средняя продажа: {format_currency(total_amount / len(sales_data))}\n\n"
+        
+        await update.message.reply_text(
+            message,
+            reply_markup=self.main_keyboard,
+            parse_mode='HTML'
+        )

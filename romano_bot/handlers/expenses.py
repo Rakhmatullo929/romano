@@ -6,10 +6,11 @@ from telegram.ext import ContextTypes
 from decimal import Decimal
 from datetime import datetime
 
-from ..models.schema import Expense
+from ..models.schema import Expense, Balance
 from ..services.database import get_session
 from ..utils.helpers import format_currency
 from ..config import EXPENSE_CATEGORIES
+from ..services.notifier import notify_group, format_expense_notification
 
 
 class ExpensesHandler:
@@ -285,7 +286,54 @@ class ExpensesHandler:
                     payment_method=None  # Not required for these expense types
                 )
                 session.add(expense)
+                session.flush()  # Flush to get expense.id
+                
+                # Create balance transaction for expense
+                balance_record = Balance(
+                    amount=expense_data['amount'],
+                    transaction_type='expense',
+                    description=f"{expense_data['category']}: {expense_data['description']}",
+                    reference_id=expense.id,
+                    reference_type='expense'
+                )
+                session.add(balance_record)
                 session.commit()
+            
+            # Get user information for notification
+            user = getattr(context, 'user', None)
+            if not user:
+                from ..utils.helpers import AuthManager
+                user = AuthManager.get_user(update.effective_user.id)
+            
+            # Get username or first_name
+            username = user.first_name if user and user.first_name else (
+                user.username if user and user.username else (
+                    update.effective_user.first_name or update.effective_user.username or 'Неизвестный пользователь'
+                )
+            )
+            
+            # Prepare note for notification
+            note = expense_data.get('comment', '')
+            if not note:
+                note = expense_data.get('description', '')
+            if expense_data.get('employee_name'):
+                note = f"{note} (Сотрудник: {expense_data['employee_name']})" if note else f"Сотрудник: {expense_data['employee_name']}"
+            
+            # Send notification to group
+            expense_timestamp = datetime.now()
+            notification_message = format_expense_notification(
+                username=username,
+                category=expense_data['category'],
+                amount=expense_data['amount'],
+                note=note or 'Без комментария',
+                timestamp=expense_timestamp
+            )
+            await notify_group(context, notification_message)
+            
+            # Get current balance
+            from .balance import BalanceHandler
+            balance_handler = BalanceHandler()
+            current_balance = balance_handler.get_current_balance_amount()
             
             # Success message
             message = f"✅ <b>Расход успешно добавлен!</b>\n\n"
@@ -296,7 +344,8 @@ class ExpensesHandler:
             if expense_data.get('employee_name'):
                 message += f"👤 <b>Сотрудник:</b> {expense_data['employee_name']}\n"
             
-            message += f"🕐 <b>Время:</b> {datetime.now().strftime('%d.%m.%Y %H:%M')}"
+            message += f"🕐 <b>Время:</b> {expense_timestamp.strftime('%d.%m.%Y %H:%M')}\n\n"
+            message += f"💰 <b>Текущий баланс:</b> {format_currency(current_balance)}"
             
             await update.message.reply_text(
                 message,
