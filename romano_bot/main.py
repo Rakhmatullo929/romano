@@ -449,6 +449,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             # Clear any active state
             context.user_data.pop('state', None)
             context.user_data.pop('sale_data', None)
+            context.user_data.pop('selected_category', None)
             await sales_handler.show_sales_menu(update, context)
             return
         elif text == '🔙 Назад к расходам':
@@ -464,7 +465,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             return
         
         # Handle state-based responses
-        if user_state == 'selecting_product':
+        if user_state == 'selecting_category':
+            await sales_handler.handle_category_selection(update, context)
+            return
+        elif user_state == 'selecting_product':
             await sales_handler.handle_product_selection(update, context)
             return
         elif user_state == 'entering_quantity':

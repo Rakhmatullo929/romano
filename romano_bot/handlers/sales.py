@@ -15,7 +15,7 @@ from datetime import datetime
 from ..models.schema import Sale, Balance
 from ..services.database import get_session
 from ..utils.helpers import format_currency, logger
-from ..config import PRODUCT_PRICES
+from ..config import PRODUCT_PRICES, MENU_CATEGORIES
 from ..services.notifier import notify_group, format_sale_notification
 
 
@@ -34,11 +34,14 @@ class SalesHandler:
             ['🔙 Главное меню']
         ], resize_keyboard=True)
         
-        self.products_keyboard = ReplyKeyboardMarkup([
-            ['☕ Американо', '☕ Капучино'],
-            ['☕ Латте', '🍵 Чай', '🍰 Десерт'],
-            ['🔙 Назад к продажам']
-        ], resize_keyboard=True)
+        # Build categories keyboard dynamically
+        categories = list(MENU_CATEGORIES.keys())
+        categories_buttons = []
+        for i in range(0, len(categories), 2):
+            row = categories[i:i+2]
+            categories_buttons.append(row)
+        categories_buttons.append(['🔙 Назад к продажам'])
+        self.categories_keyboard = ReplyKeyboardMarkup(categories_buttons, resize_keyboard=True)
         
         self.discount_keyboard = ReplyKeyboardMarkup([
             ['✅ Да', '❌ Нет'],
@@ -75,55 +78,118 @@ class SalesHandler:
             )
     
     async def add_sale(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        """Start adding new sale - show products menu"""
+        """Start adding new sale - show categories menu"""
         # Clear any previous sale data
         context.user_data.pop('sale_data', None)
         context.user_data.pop('state', None)
+        context.user_data.pop('selected_category', None)
         
-        message = "☕ <b>Выберите продукт:</b>\n\n"
-        for product, price in PRODUCT_PRICES.items():
+        message = "📋 <b>Выберите категорию:</b>\n\n"
+        for category in MENU_CATEGORIES.keys():
+            product_count = len(MENU_CATEGORIES[category])
+            message += f"• {category} ({product_count} товаров)\n"
+        
+        await update.message.reply_text(
+            message,
+            reply_markup=self.categories_keyboard,
+            parse_mode='HTML'
+        )
+        context.user_data['state'] = 'selecting_category'
+    
+    async def handle_category_selection(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Handle category selection - show products in selected category"""
+        category_name = update.message.text
+        
+        # Check if user wants to go back to sales menu
+        if category_name == '🔙 Назад к продажам':
+            context.user_data.pop('selected_category', None)
+            context.user_data.pop('state', None)
+            await self.show_sales_menu(update, context)
+            return
+        
+        # Check if it's a valid category
+        if category_name not in MENU_CATEGORIES:
+            await update.message.reply_text(
+                "❌ Неверный выбор категории. Попробуйте еще раз.",
+                reply_markup=self.categories_keyboard
+            )
+            return
+        
+        # Store selected category
+        context.user_data['selected_category'] = category_name
+        products = MENU_CATEGORIES[category_name]
+        
+        # Build products keyboard
+        product_buttons = []
+        product_list = list(products.keys())
+        for i in range(0, len(product_list), 2):
+            row = product_list[i:i+2]
+            product_buttons.append(row)
+        product_buttons.append(['🔙 Назад к категориям'])
+        products_keyboard = ReplyKeyboardMarkup(product_buttons, resize_keyboard=True)
+        
+        # Show products with prices
+        message = f"📋 <b>Категория: {category_name}</b>\n\n"
+        message += "<b>Выберите товар:</b>\n\n"
+        for product, price in products.items():
             message += f"• {product}: {format_currency(price)}\n"
         
         await update.message.reply_text(
             message,
-            reply_markup=self.products_keyboard,
+            reply_markup=products_keyboard,
             parse_mode='HTML'
         )
         context.user_data['state'] = 'selecting_product'
     
     async def handle_product_selection(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle product selection"""
-        product_text = update.message.text
+        product_name = update.message.text
+        selected_category = context.user_data.get('selected_category')
         
-        # Map emoji buttons to product names
-        product_mapping = {
-            '☕ Американо': 'Американо',
-            '☕ Капучино': 'Капучино', 
-            '☕ Латте': 'Латте',
-            '🍵 Чай': 'Чай',
-            '🍰 Десерт': 'Десерт'
-        }
+        # Check if user wants to go back to categories
+        if product_name == '🔙 Назад к категориям':
+            await self.add_sale(update, context)
+            return
         
-        # Check if it's a valid product selection
-        if product_text not in product_mapping:
+        # Validate category exists
+        if not selected_category or selected_category not in MENU_CATEGORIES:
             await update.message.reply_text(
-                "❌ Неверный выбор продукта. Попробуйте еще раз.",
-                reply_markup=self.products_keyboard
+                "❌ Ошибка: категория не выбрана. Начните заново.",
+                reply_markup=self.categories_keyboard
+            )
+            context.user_data.pop('selected_category', None)
+            context.user_data['state'] = 'selecting_category'
+            return
+        
+        # Check if product exists in selected category
+        products = MENU_CATEGORIES[selected_category]
+        if product_name not in products:
+            # Build products keyboard again
+            product_buttons = []
+            product_list = list(products.keys())
+            for i in range(0, len(product_list), 2):
+                row = product_list[i:i+2]
+                product_buttons.append(row)
+            product_buttons.append(['🔙 Назад к категориям'])
+            products_keyboard = ReplyKeyboardMarkup(product_buttons, resize_keyboard=True)
+            
+            await update.message.reply_text(
+                "❌ Неверный выбор товара. Попробуйте еще раз.",
+                reply_markup=products_keyboard
             )
             return
         
-        # Get the actual product name without emoji
-        product_name = product_mapping[product_text]
-        
         # Store product selection
         context.user_data['sale_data'] = {
+            'category': selected_category,
             'product_name': product_name,
-            'unit_price': PRODUCT_PRICES[product_name]
+            'unit_price': products[product_name]
         }
         
         await update.message.reply_text(
-            f"☕ <b>Выбран продукт:</b> {product_name}\n"
-            f"💰 <b>Цена:</b> {format_currency(PRODUCT_PRICES[product_name])}\n\n"
+            f"📋 <b>Категория:</b> {selected_category}\n"
+            f"☕ <b>Выбран товар:</b> {product_name}\n"
+            f"💰 <b>Цена:</b> {format_currency(products[product_name])}\n\n"
             "Введите количество (в штуках):",
             reply_markup=ReplyKeyboardRemove(),
             parse_mode='HTML'
@@ -280,7 +346,9 @@ class SalesHandler:
         sale_data = context.user_data['sale_data']
         
         message = "📋 <b>Подтверждение продажи</b>\n\n"
-        message += f"☕ <b>Продукт:</b> {sale_data['product_name']}\n"
+        if sale_data.get('category'):
+            message += f"📋 <b>Категория:</b> {sale_data['category']}\n"
+        message += f"☕ <b>Товар:</b> {sale_data['product_name']}\n"
         message += f"📦 <b>Количество:</b> {sale_data['quantity']} шт.\n"
         message += f"💰 <b>Цена за единицу:</b> {format_currency(sale_data['unit_price'])}\n"
         message += f"💵 <b>Сумма без скидки:</b> {format_currency(sale_data['subtotal'])}\n"
@@ -312,6 +380,7 @@ class SalesHandler:
             )
             context.user_data.pop('sale_data', None)
             context.user_data.pop('state', None)
+            context.user_data.pop('selected_category', None)
         else:
             await update.message.reply_text(
                 "❌ Неверный выбор. Подтвердите или отмените продажу:",
@@ -379,7 +448,9 @@ class SalesHandler:
             
             # Success message
             message = "✅ <b>Продажа успешно добавлена!</b>\n\n"
-            message += f"☕ <b>Продукт:</b> {sale_data['product_name']}\n"
+            if sale_data.get('category'):
+                message += f"📋 <b>Категория:</b> {sale_data['category']}\n"
+            message += f"☕ <b>Товар:</b> {sale_data['product_name']}\n"
             message += f"📦 <b>Количество:</b> {sale_data['quantity']} шт.\n"
             message += f"💵 <b>Итого:</b> {format_currency(sale_data['total_amount'])}\n"
             message += f"💳 <b>Оплата:</b> {sale_data['payment_method']}\n"
@@ -395,6 +466,7 @@ class SalesHandler:
             # Clear sale data
             context.user_data.pop('sale_data', None)
             context.user_data.pop('state', None)
+            context.user_data.pop('selected_category', None)
             
         except Exception as e:
             await update.message.reply_text(
