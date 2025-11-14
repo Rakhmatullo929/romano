@@ -189,7 +189,6 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 <b>Способы оплаты:</b>
 • наличные
 • карта
-• перевод
 
 <b>Поддержка:</b>
 Если у вас есть вопросы, обратитесь к администратору.
@@ -431,10 +430,19 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         user_state = context.user_data.get('state')
         
         # Debug logging
-        logger.info(f"User {user_id} state: {user_state}, message: {text}")
+        logger.info(f"User {user_id} state: {user_state}, message: {text}, state type: {type(user_state)}")
         
         # Handle navigation buttons (check before state processing)
-        if text == '🔙 Назад к пользователям':
+        if text == '🔙 Главное меню':
+            # Clear any active state
+            context.user_data.pop('state', None)
+            context.user_data.pop('sale_data', None)
+            context.user_data.pop('selected_category', None)
+            context.user_data.pop('selected_user_id', None)
+            context.user_data.pop('manual_quantity_input', None)
+            await start(update, context)
+            return
+        elif text == '🔙 Назад к пользователям':
             # Clear any active state
             context.user_data.pop('state', None)
             context.user_data.pop('selected_user_id', None)
@@ -445,28 +453,22 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             context.user_data.pop('state', None)
             await balance_handler.show_balance_menu(update, context)
             return
-        elif text == '🔙 Назад к продажам':
-            # Clear any active state
-            context.user_data.pop('state', None)
-            context.user_data.pop('sale_data', None)
-            context.user_data.pop('selected_category', None)
-            await sales_handler.show_sales_menu(update, context)
-            return
-        elif text == '🔙 Назад к расходам':
-            # Clear any active state
-            context.user_data.pop('state', None)
-            context.user_data.pop('expense_data', None)
-            await expenses_handler.show_expenses_menu(update, context)
-            return
-        elif text == '🔙 Назад к отчетам':
-            # Clear any active state
-            context.user_data.pop('state', None)
-            await reports_handler.show_reports_menu(update, context)
-            return
         
         # Handle state-based responses
-        if user_state == 'selecting_category':
-            await sales_handler.handle_category_selection(update, context)
+        # Check state again after navigation buttons to ensure it hasn't changed
+        current_state = context.user_data.get('state')
+        if current_state == 'selecting_category':
+            logger.info(f"Processing category selection for user {user_id}, category: {text}")
+            try:
+                await sales_handler.handle_category_selection(update, context)
+                logger.info(f"Category selection completed for user {user_id}")
+            except Exception as e:
+                logger.error(f"Error in handle_category_selection: {str(e)}", user_id, exc_info=True)
+                await update.message.reply_text(
+                    "❌ Произошла ошибка при выборе категории. Попробуйте еще раз.",
+                    reply_markup=sales_handler.categories_keyboard
+                )
+            # Always return after processing state
             return
         elif user_state == 'selecting_product':
             await sales_handler.handle_product_selection(update, context)
@@ -486,14 +488,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         elif user_state == 'confirming_sale':
             await sales_handler.handle_sale_confirmation(update, context)
             return
-        elif user_state == 'entering_purchase_data':
-            await expenses_handler.handle_purchase_data(update, context)
+        elif user_state == 'entering_expense_amount':
+            await expenses_handler.handle_expense_amount(update, context)
             return
-        elif user_state == 'entering_salary_data':
-            await expenses_handler.handle_salary_data(update, context)
-            return
-        elif user_state == 'entering_writeoff_data':
-            await expenses_handler.handle_writeoff_data(update, context)
+        elif user_state == 'entering_expense_description':
+            await expenses_handler.handle_expense_description(update, context)
             return
         elif user_state == 'confirming_expense':
             await expenses_handler.handle_expense_confirmation(update, context)
@@ -517,7 +516,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         # Handle menu selections
         if text == '💰 Продажи':
             if user.can_add_sales():
-                await sales_handler.show_sales_menu(update, context)
+                await sales_handler.add_sale(update, context)
             else:
                 await update.message.reply_text("❌ У вас нет прав для работы с продажами.")
         elif text == '💸 Расходы':
@@ -539,8 +538,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                 await update.message.reply_text("❌ У вас нет прав для управления пользователями.")
         elif text == 'ℹ️ Помощь':
             await help_command(update, context)
-        elif text == '🔙 Главное меню':
-            await start(update, context)
     
         # Sales menu handlers
         elif text == '💰 Добавить продажу':
@@ -551,8 +548,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             await sales_handler.get_weekly_sales(update, context)
         elif text == '📅 Продажи за месяц':
             await sales_handler.get_monthly_sales(update, context)
-        elif text == '🔙 Назад к продажам':
-            await sales_handler.show_sales_menu(update, context)
         
         # Expenses menu handlers
         elif text == '🛒 Закуп':
@@ -599,12 +594,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             await balance_handler.add_income(update, context)
         elif text == '💸 Снять средства':
             await balance_handler.add_expense_transaction(update, context)
-        elif text == '📅 День':
-            await balance_handler.set_period_day(update, context)
-        elif text == '📈 Неделя':
-            await balance_handler.set_period_week(update, context)
-        elif text == '📊 Месяц':
-            await balance_handler.set_period_month(update, context)
         elif text == '🔄 Обновить данные':
             await balance_handler.refresh_data(update, context)
         elif text == '📊 Сформировать отчет':

@@ -40,22 +40,30 @@ class SalesHandler:
         for i in range(0, len(categories), 2):
             row = categories[i:i+2]
             categories_buttons.append(row)
-        categories_buttons.append(['🔙 Назад к продажам'])
+        categories_buttons.append(['🔙 Главное меню'])
         self.categories_keyboard = ReplyKeyboardMarkup(categories_buttons, resize_keyboard=True)
         
         self.discount_keyboard = ReplyKeyboardMarkup([
-            ['✅ Да', '❌ Нет'],
-            ['🔙 Назад к продажам']
+            ['✅ Подтвердить', '🎯 Применить скидку'],
+            ['🔙 Главное меню']
         ], resize_keyboard=True)
         
         self.payment_keyboard = ReplyKeyboardMarkup([
             ['💵 Наличные', '💳 Карта'],
-            ['📱 Перевод', '🔙 Назад к продажам']
+            ['🔙 Главное меню']
         ], resize_keyboard=True)
         
         self.confirm_keyboard = ReplyKeyboardMarkup([
             ['✅ Подтвердить', '❌ Отменить'],
-            ['🔙 Назад к продажам']
+            ['🔙 Главное меню']
+        ], resize_keyboard=True)
+        
+        # Quantity selection keyboard with buttons 1-10 in two rows
+        self.quantity_keyboard = ReplyKeyboardMarkup([
+            ['1', '2', '3', '4', '5'],
+            ['6', '7', '8', '9', '10'],
+            ['✏️ Ввести вручную'],
+            ['🔙 Главное меню']
         ], resize_keyboard=True)
     
     async def show_sales_menu(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -83,6 +91,7 @@ class SalesHandler:
         context.user_data.pop('sale_data', None)
         context.user_data.pop('state', None)
         context.user_data.pop('selected_category', None)
+        context.user_data.pop('manual_quantity_input', None)
         
         message = "📋 <b>Выберите категорию:</b>\n\n"
         for category in MENU_CATEGORIES.keys():
@@ -99,21 +108,26 @@ class SalesHandler:
     async def handle_category_selection(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle category selection - show products in selected category"""
         category_name = update.message.text
+        user_id = update.effective_user.id
         
-        # Check if user wants to go back to sales menu
-        if category_name == '🔙 Назад к продажам':
-            context.user_data.pop('selected_category', None)
-            context.user_data.pop('state', None)
-            await self.show_sales_menu(update, context)
+        logger.info(f"handle_category_selection called for user {user_id}, category: {category_name}")
+        
+        # Check if user wants to go back to main menu
+        # This will be handled by main.py before state processing
+        if category_name == '🔙 Главное меню':
+            logger.info(f"User {user_id} wants to go back to main menu")
             return
         
         # Check if it's a valid category
         if category_name not in MENU_CATEGORIES:
+            logger.warning(f"Invalid category '{category_name}' selected by user {user_id}")
             await update.message.reply_text(
                 "❌ Неверный выбор категории. Попробуйте еще раз.",
                 reply_markup=self.categories_keyboard
             )
             return
+        
+        logger.info(f"Valid category '{category_name}' selected by user {user_id}")
         
         # Store selected category
         context.user_data['selected_category'] = category_name
@@ -121,18 +135,18 @@ class SalesHandler:
         
         # Build products keyboard
         product_buttons = []
-        product_list = list(products.keys())
+        product_list = sorted(list(products.keys()))  # Sort alphabetically
         for i in range(0, len(product_list), 2):
             row = product_list[i:i+2]
             product_buttons.append(row)
         product_buttons.append(['🔙 Назад к категориям'])
         products_keyboard = ReplyKeyboardMarkup(product_buttons, resize_keyboard=True)
         
-        # Show products with prices
+        # Show products with prices (sorted alphabetically)
         message = f"📋 <b>Категория: {category_name}</b>\n\n"
         message += "<b>Выберите товар:</b>\n\n"
-        for product, price in products.items():
-            message += f"• {product}: {format_currency(price)}\n"
+        for product in sorted(products.keys()):  # Sort alphabetically
+            message += f"• {product}: {format_currency(products[product])}\n"
         
         await update.message.reply_text(
             message,
@@ -166,7 +180,7 @@ class SalesHandler:
         if product_name not in products:
             # Build products keyboard again
             product_buttons = []
-            product_list = list(products.keys())
+            product_list = sorted(list(products.keys()))  # Sort alphabetically
             for i in range(0, len(product_list), 2):
                 row = product_list[i:i+2]
                 product_buttons.append(row)
@@ -190,22 +204,113 @@ class SalesHandler:
             f"📋 <b>Категория:</b> {selected_category}\n"
             f"☕ <b>Выбран товар:</b> {product_name}\n"
             f"💰 <b>Цена:</b> {format_currency(products[product_name])}\n\n"
-            "Введите количество (в штуках):",
-            reply_markup=ReplyKeyboardRemove(),
+            "Выберите количество или введите вручную:",
+            reply_markup=self.quantity_keyboard,
             parse_mode='HTML'
         )
         context.user_data['state'] = 'entering_quantity'
     
     async def handle_quantity_input(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        """Handle quantity input"""
+        """Handle quantity input - supports both button clicks (1-10) and manual input"""
+        user_input = update.message.text.strip()
+        user_id = update.effective_user.id
+        
+        # Check if user wants to go back to main menu
+        if user_input == '🔙 Главное меню':
+            return
+        
+        # Check if user wants to enter quantity manually
+        if user_input == '✏️ Ввести вручную':
+            await update.message.reply_text(
+                "✏️ <b>Введите количество вручную</b>\n\n"
+                "Введите число от 1 до 100:",
+                reply_markup=ReplyKeyboardRemove(),
+                parse_mode='HTML'
+            )
+            # Keep state as 'entering_quantity' but now expecting manual input
+            context.user_data['manual_quantity_input'] = True
+            return
+        
+        # Check if user sent a product name instead of quantity
+        # This can happen if user wants to change product selection
+        selected_category = context.user_data.get('selected_category')
+        if selected_category and selected_category in MENU_CATEGORIES:
+            products = MENU_CATEGORIES[selected_category]
+            if user_input in products:
+                # User sent a product name - treat it as product selection change
+                logger.info(f"User {user_id} sent product name '{user_input}' instead of quantity, treating as product change")
+                await update.message.reply_text(
+                    f"📋 Вы изменили выбор товара на: <b>{user_input}</b>\n\n"
+                    "Выберите количество или введите вручную:",
+                    reply_markup=self.quantity_keyboard,
+                    parse_mode='HTML'
+                )
+                # Update product selection
+                context.user_data['sale_data'] = {
+                    'category': selected_category,
+                    'product_name': user_input,
+                    'unit_price': products[user_input]
+                }
+                # Clear manual input flag
+                context.user_data.pop('manual_quantity_input', None)
+                # Keep state as 'entering_quantity'
+                return
+        
+        # Try to parse as integer
         try:
-            quantity = int(update.message.text.strip())
+            # Check if input is a valid number string before conversion
+            # Allow both button clicks (1-10) and manual input
+            if not user_input.isdigit():
+                # Not a number - show friendly error message
+                # Check if we're in manual input mode
+                if context.user_data.get('manual_quantity_input'):
+                    await update.message.reply_text(
+                        "❌ Пожалуйста, введите <b>число</b> (количество товара от 1 до 100).\n\n"
+                        "Например: <code>1</code>, <code>2</code>, <code>5</code>",
+                        reply_markup=ReplyKeyboardRemove(),
+                        parse_mode='HTML'
+                    )
+                else:
+                    await update.message.reply_text(
+                        "❌ Пожалуйста, выберите количество из кнопок или нажмите '✏️ Ввести вручную' для ручного ввода.",
+                        reply_markup=self.quantity_keyboard,
+                        parse_mode='HTML'
+                    )
+                return
+            
+            quantity = int(user_input)
             
             if quantity <= 0:
-                raise ValueError("Количество должно быть больше 0")
+                error_msg = "❌ Количество должно быть больше 0.\n\n"
+                if context.user_data.get('manual_quantity_input'):
+                    error_msg += "Введите число от 1 до 100:"
+                    await update.message.reply_text(
+                        error_msg,
+                        reply_markup=ReplyKeyboardRemove()
+                    )
+                else:
+                    error_msg += "Выберите количество из кнопок или введите вручную:"
+                    await update.message.reply_text(
+                        error_msg,
+                        reply_markup=self.quantity_keyboard
+                    )
+                return
             
             if quantity > 100:
-                raise ValueError("Максимальное количество: 100 штук")
+                error_msg = "❌ Максимальное количество: 100 штук.\n\n"
+                if context.user_data.get('manual_quantity_input'):
+                    error_msg += "Введите число от 1 до 100:"
+                    await update.message.reply_text(
+                        error_msg,
+                        reply_markup=ReplyKeyboardRemove()
+                    )
+                else:
+                    error_msg += "Выберите количество из кнопок или введите вручную:"
+                    await update.message.reply_text(
+                        error_msg,
+                        reply_markup=self.quantity_keyboard
+                    )
+                return
             
             # Store quantity
             context.user_data['sale_data']['quantity'] = quantity
@@ -214,21 +319,47 @@ class SalesHandler:
             subtotal = context.user_data['sale_data']['unit_price'] * quantity
             context.user_data['sale_data']['subtotal'] = subtotal
             
+            # Clear manual input flag
+            context.user_data.pop('manual_quantity_input', None)
+            
             await update.message.reply_text(
                 f"📦 <b>Количество:</b> {quantity} шт.\n"
-                f"💰 <b>Сумма без скидки:</b> {format_currency(subtotal)}\n\n"
-                "Применить скидку?",
+                f"💰 <b>Сумма без скидки:</b> {format_currency(subtotal)}",
                 reply_markup=self.discount_keyboard,
                 parse_mode='HTML'
             )
             context.user_data['state'] = 'asking_discount'
             
         except ValueError as e:
-            await update.message.reply_text(
-                f"❌ Ошибка: {str(e)}\n\n"
-                "Введите корректное количество (число от 1 до 100):",
-                reply_markup=ReplyKeyboardRemove()
-            )
+            # Fallback for any ValueError that might occur
+            logger.warning(f"ValueError in handle_quantity_input for user {user_id}: {str(e)}")
+            if context.user_data.get('manual_quantity_input'):
+                await update.message.reply_text(
+                    "❌ Пожалуйста, введите <b>число</b> (количество товара от 1 до 100).\n\n"
+                    "Например: <code>1</code>, <code>2</code>, <code>5</code>",
+                    reply_markup=ReplyKeyboardRemove(),
+                    parse_mode='HTML'
+                )
+            else:
+                await update.message.reply_text(
+                    "❌ Пожалуйста, выберите количество из кнопок или нажмите '✏️ Ввести вручную' для ручного ввода.",
+                    reply_markup=self.quantity_keyboard,
+                    parse_mode='HTML'
+                )
+        except Exception as e:
+            logger.error(f"Unexpected error in handle_quantity_input: {str(e)}", user_id, exc_info=True)
+            if context.user_data.get('manual_quantity_input'):
+                await update.message.reply_text(
+                    "❌ Произошла ошибка при обработке количества.\n\n"
+                    "Пожалуйста, введите число от 1 до 100:",
+                    reply_markup=ReplyKeyboardRemove()
+                )
+            else:
+                await update.message.reply_text(
+                    "❌ Произошла ошибка при обработке количества.\n\n"
+                    "Пожалуйста, выберите количество из кнопок или введите вручную:",
+                    reply_markup=self.quantity_keyboard
+                )
     
     async def handle_discount_choice(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle discount choice"""
@@ -237,7 +368,11 @@ class SalesHandler:
         
         logger.info(f"User {user_id} discount choice: {choice}")
         
-        if choice == "✅ Да":
+        # Check if user wants to go back to main menu (handled by main.py before state processing)
+        if choice == '🔙 Главное меню':
+            return
+        
+        if choice == "🎯 Применить скидку":
             subtotal = context.user_data['sale_data']['subtotal']
             await update.message.reply_text(
                 f"Введите сумму скидки (максимум {format_currency(subtotal)}):",
@@ -245,7 +380,7 @@ class SalesHandler:
             )
             context.user_data['state'] = 'entering_discount'
             logger.info(f"Set state to 'entering_discount' for user {user_id}")
-        elif choice == "❌ Нет":
+        elif choice == "✅ Подтвердить":
             # No discount, proceed to payment method
             context.user_data['sale_data']['discount_percent'] = 0
             context.user_data['sale_data']['discount_amount'] = 0
@@ -254,7 +389,7 @@ class SalesHandler:
             await self._show_payment_selection(update, context)
         else:
             await update.message.reply_text(
-                "❌ Неверный выбор. Выберите Да или Нет:",
+                "❌ Неверный выбор. Подтвердите или примените скидку:",
                 reply_markup=self.discount_keyboard
             )
     
@@ -313,7 +448,11 @@ class SalesHandler:
         """Handle payment method selection"""
         payment_method = update.message.text
         
-        if payment_method not in ['💵 Наличные', '💳 Карта', '📱 Перевод']:
+        # Check if user wants to go back to main menu (handled by main.py before state processing)
+        if payment_method == '🔙 Главное меню':
+            return
+        
+        if payment_method not in ['💵 Наличные', '💳 Карта']:
             await update.message.reply_text(
                 "❌ Неверный выбор способа оплаты. Попробуйте еще раз:",
                 reply_markup=self.payment_keyboard
@@ -323,8 +462,7 @@ class SalesHandler:
         # Map emoji to text
         payment_map = {
             '💵 Наличные': 'наличные',
-            '💳 Карта': 'карта',
-            '📱 Перевод': 'перевод'
+            '💳 Карта': 'карта'
         }
         
         context.user_data['sale_data']['payment_method'] = payment_map[payment_method]
@@ -371,16 +509,24 @@ class SalesHandler:
         """Handle sale confirmation"""
         choice = update.message.text
         
+        # Check if user wants to go back to main menu (handled by main.py before state processing)
+        if choice == '🔙 Главное меню':
+            return
+        
         if choice == "✅ Подтвердить":
             await self._save_sale(update, context)
         elif choice == "❌ Отменить":
-            await update.message.reply_text(
-                "❌ Продажа отменена.",
-                reply_markup=self.main_keyboard
-            )
+            # Clear sale data
             context.user_data.pop('sale_data', None)
             context.user_data.pop('state', None)
             context.user_data.pop('selected_category', None)
+            context.user_data.pop('manual_quantity_input', None)
+            # Return to main menu
+            from ..main import MAIN_KEYBOARD
+            await update.message.reply_text(
+                "❌ Продажа отменена.",
+                reply_markup=MAIN_KEYBOARD
+            )
         else:
             await update.message.reply_text(
                 "❌ Неверный выбор. Подтвердите или отмените продажу:",
@@ -457,9 +603,12 @@ class SalesHandler:
             message += f"🕐 <b>Время:</b> {sale_timestamp.strftime('%d.%m.%Y %H:%M')}\n\n"
             message += f"💰 <b>Текущий баланс:</b> {format_currency(current_balance)}"
             
+            # Import MAIN_KEYBOARD from main module
+            from ..main import MAIN_KEYBOARD
+            
             await update.message.reply_text(
                 message,
-                reply_markup=self.main_keyboard,
+                reply_markup=MAIN_KEYBOARD,
                 parse_mode='HTML'
             )
             
@@ -467,12 +616,14 @@ class SalesHandler:
             context.user_data.pop('sale_data', None)
             context.user_data.pop('state', None)
             context.user_data.pop('selected_category', None)
+            context.user_data.pop('manual_quantity_input', None)
             
         except Exception as e:
+            from ..main import MAIN_KEYBOARD
             await update.message.reply_text(
                 f"❌ Ошибка при сохранении продажи: {str(e)}\n\n"
                 "Попробуйте еще раз.",
-                reply_markup=self.main_keyboard
+                reply_markup=MAIN_KEYBOARD
             )
     
     async def get_daily_sales(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:

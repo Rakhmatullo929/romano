@@ -26,16 +26,24 @@ class ExpensesHandler:
         
         self.categories_keyboard = ReplyKeyboardMarkup([
             ['🛒 Закуп', '👥 Зарплата', '📉 Списание'],
-            ['🔙 Назад к расходам']
+            ['🔙 Назад к расходам', '🔙 Главное меню']
         ], resize_keyboard=True)
         
         self.confirm_keyboard = ReplyKeyboardMarkup([
             ['✅ Подтвердить', '❌ Отменить'],
-            ['🔙 Назад к расходам']
+            ['🔙 Назад к расходам', '🔙 Главное меню']
+        ], resize_keyboard=True)
+        
+        self.back_to_main_keyboard = ReplyKeyboardMarkup([
+            ['🔙 Главное меню']
         ], resize_keyboard=True)
     
     async def show_expenses_menu(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Show expenses menu"""
+        # Clear any active expense state when returning to menu
+        context.user_data.pop('expense_data', None)
+        context.user_data.pop('state', None)
+        
         await update.message.reply_text(
             "💸 <b>Управление расходами</b>\n\n"
             "Выберите тип расхода:",
@@ -51,14 +59,11 @@ class ExpensesHandler:
         
         await update.message.reply_text(
             "🛒 <b>Добавление закупа</b>\n\n"
-            "Введите данные в формате:\n"
-            "<code>Сумма — Описание</code>\n\n"
-            "Пример: <code>500000 — 5 кг кофе</code>\n"
-            "Пример: <code>150000 — Молоко и сливки</code>",
-            reply_markup=ReplyKeyboardRemove(),
+            "Введите сумму расхода:",
+            reply_markup=self.back_to_main_keyboard,
             parse_mode='HTML'
         )
-        context.user_data['state'] = 'entering_purchase_data'
+        context.user_data['state'] = 'entering_expense_amount'
         context.user_data['expense_data'] = {'category': 'Закуп'}
     
     async def add_salary(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -69,14 +74,11 @@ class ExpensesHandler:
         
         await update.message.reply_text(
             "👥 <b>Добавление зарплаты</b>\n\n"
-            "Введите данные в формате:\n"
-            "<code>Имя сотрудника — Сумма</code>\n\n"
-            "Пример: <code>Ахмед — 800000</code>\n"
-            "Пример: <code>Мария — 750000</code>",
-            reply_markup=ReplyKeyboardRemove(),
+            "Введите сумму расхода:",
+            reply_markup=self.back_to_main_keyboard,
             parse_mode='HTML'
         )
-        context.user_data['state'] = 'entering_salary_data'
+        context.user_data['state'] = 'entering_expense_amount'
         context.user_data['expense_data'] = {'category': 'Зарплата'}
     
     async def add_write_off(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -87,90 +89,91 @@ class ExpensesHandler:
         
         await update.message.reply_text(
             "📉 <b>Добавление списания</b>\n\n"
-            "Введите данные в формате:\n"
-            "<code>Сумма — Причина списания</code>\n\n"
-            "Пример: <code>25000 — Испортились сливки</code>\n"
-            "Пример: <code>50000 — Сломался блендер</code>",
-            reply_markup=ReplyKeyboardRemove(),
+            "Введите сумму расхода:",
+            reply_markup=self.back_to_main_keyboard,
             parse_mode='HTML'
         )
-        context.user_data['state'] = 'entering_writeoff_data'
+        context.user_data['state'] = 'entering_expense_amount'
         context.user_data['expense_data'] = {'category': 'Списание'}
     
-    async def handle_purchase_data(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        """Handle purchase data input"""
+    async def handle_expense_amount(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Handle expense amount input"""
         try:
-            data = update.message.text.strip()
+            amount_str = update.message.text.strip()
             
-            # Parse format: "Сумма — Описание"
-            if '—' not in data:
-                raise ValueError("Используйте формат: Сумма — Описание")
-            
-            parts = data.split('—', 1)
-            if len(parts) != 2:
-                raise ValueError("Неверный формат данных")
-            
-            amount_str, description = parts
-            amount_str = amount_str.strip()
-            description = description.strip()
-            
-            if not amount_str or not description:
-                raise ValueError("Сумма и описание не могут быть пустыми")
+            if not amount_str:
+                raise ValueError("Сумма не может быть пустой")
             
             amount = Decimal(amount_str)
             if amount <= 0:
                 raise ValueError("Сумма должна быть больше 0")
             
-            # Store expense data
-            context.user_data['expense_data'].update({
-                'amount': amount,
-                'description': description,
-                'comment': f"Закуп: {description}"
-            })
+            # Store amount
+            context.user_data['expense_data']['amount'] = amount
             
-            # Show confirmation
-            await self._show_expense_confirmation(update, context)
+            # Ask for description/name based on category
+            category = context.user_data['expense_data']['category']
+            
+            if category == 'Зарплата':
+                await update.message.reply_text(
+                    "👥 <b>Добавление зарплаты</b>\n\n"
+                    "Введите имя сотрудника:",
+                    reply_markup=self.back_to_main_keyboard,
+                    parse_mode='HTML'
+                )
+            elif category == 'Закуп':
+                await update.message.reply_text(
+                    "🛒 <b>Добавление закупа</b>\n\n"
+                    "Введите название/описание закупа:",
+                    reply_markup=self.back_to_main_keyboard,
+                    parse_mode='HTML'
+                )
+            elif category == 'Списание':
+                await update.message.reply_text(
+                    "📉 <b>Добавление списания</b>\n\n"
+                    "Введите причину списания:",
+                    reply_markup=self.back_to_main_keyboard,
+                    parse_mode='HTML'
+                )
+            
+            context.user_data['state'] = 'entering_expense_description'
             
         except (ValueError, TypeError) as e:
             await update.message.reply_text(
                 f"❌ Ошибка: {str(e)}\n\n"
-                "Попробуйте еще раз в правильном формате:\n"
-                "<code>Сумма — Описание</code>",
-                reply_markup=ReplyKeyboardRemove(),
+                "Пожалуйста, введите корректную сумму (только число):",
+                reply_markup=self.back_to_main_keyboard,
                 parse_mode='HTML'
             )
     
-    async def handle_salary_data(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        """Handle salary data input"""
+    async def handle_expense_description(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Handle expense description/name input"""
         try:
-            data = update.message.text.strip()
+            description = update.message.text.strip()
             
-            # Parse format: "Имя — Сумма"
-            if '—' not in data:
-                raise ValueError("Используйте формат: Имя — Сумма")
+            if not description:
+                raise ValueError("Название/описание не может быть пустым")
             
-            parts = data.split('—', 1)
-            if len(parts) != 2:
-                raise ValueError("Неверный формат данных")
+            category = context.user_data['expense_data']['category']
             
-            employee_name, amount_str = parts
-            employee_name = employee_name.strip()
-            amount_str = amount_str.strip()
-            
-            if not employee_name or not amount_str:
-                raise ValueError("Имя сотрудника и сумма не могут быть пустыми")
-            
-            amount = Decimal(amount_str)
-            if amount <= 0:
-                raise ValueError("Сумма должна быть больше 0")
-            
-            # Store expense data
-            context.user_data['expense_data'].update({
-                'amount': amount,
-                'description': f"Зарплата {employee_name}",
-                'employee_name': employee_name,
-                'comment': f"Зарплата сотрудника: {employee_name}"
-            })
+            # Store description based on category
+            if category == 'Зарплата':
+                employee_name = description
+                context.user_data['expense_data'].update({
+                    'description': f"Зарплата {employee_name}",
+                    'employee_name': employee_name,
+                    'comment': f"Зарплата сотрудника: {employee_name}"
+                })
+            elif category == 'Закуп':
+                context.user_data['expense_data'].update({
+                    'description': description,
+                    'comment': f"Закуп: {description}"
+                })
+            elif category == 'Списание':
+                context.user_data['expense_data'].update({
+                    'description': f"Списание: {description}",
+                    'comment': description
+                })
             
             # Show confirmation
             await self._show_expense_confirmation(update, context)
@@ -178,52 +181,8 @@ class ExpensesHandler:
         except (ValueError, TypeError) as e:
             await update.message.reply_text(
                 f"❌ Ошибка: {str(e)}\n\n"
-                "Попробуйте еще раз в правильном формате:\n"
-                "<code>Имя — Сумма</code>",
-                reply_markup=ReplyKeyboardRemove(),
-                parse_mode='HTML'
-            )
-    
-    async def handle_writeoff_data(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        """Handle write-off data input"""
-        try:
-            data = update.message.text.strip()
-            
-            # Parse format: "Сумма — Причина"
-            if '—' not in data:
-                raise ValueError("Используйте формат: Сумма — Причина")
-            
-            parts = data.split('—', 1)
-            if len(parts) != 2:
-                raise ValueError("Неверный формат данных")
-            
-            amount_str, reason = parts
-            amount_str = amount_str.strip()
-            reason = reason.strip()
-            
-            if not amount_str or not reason:
-                raise ValueError("Сумма и причина не могут быть пустыми")
-            
-            amount = Decimal(amount_str)
-            if amount <= 0:
-                raise ValueError("Сумма должна быть больше 0")
-            
-            # Store expense data
-            context.user_data['expense_data'].update({
-                'amount': amount,
-                'description': f"Списание: {reason}",
-                'comment': reason
-            })
-            
-            # Show confirmation
-            await self._show_expense_confirmation(update, context)
-            
-        except (ValueError, TypeError) as e:
-            await update.message.reply_text(
-                f"❌ Ошибка: {str(e)}\n\n"
-                "Попробуйте еще раз в правильном формате:\n"
-                "<code>Сумма — Причина</code>",
-                reply_markup=ReplyKeyboardRemove(),
+                "Пожалуйста, введите название/описание:",
+                reply_markup=self.back_to_main_keyboard,
                 parse_mode='HTML'
             )
     

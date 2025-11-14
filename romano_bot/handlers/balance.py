@@ -16,7 +16,7 @@ class BalanceHandler:
     
     def __init__(self):
         self.main_keyboard = ReplyKeyboardMarkup([
-            ['📅 День', '📈 Неделя', '📊 Месяц'],
+            ['💰 Текущий баланс', '📊 История операций'],
             ['🔄 Обновить данные', '📊 Сформировать отчет'],
             ['🔙 Главное меню']
         ], resize_keyboard=True)
@@ -24,7 +24,6 @@ class BalanceHandler:
         self.admin_keyboard = ReplyKeyboardMarkup([
             ['💰 Текущий баланс', '📊 История операций'],
             ['💵 Пополнить баланс', '💸 Снять средства'],
-            ['📅 День', '📈 Неделя', '📊 Месяц'],
             ['🔙 Главное меню']
         ], resize_keyboard=True)
         
