@@ -365,6 +365,45 @@ class AuthManager:
             return None
     
     @staticmethod
+    def normalize_role(role: Optional[str]) -> str:
+        """
+        Normalize incoming role value to canonical Russian labels.
+        
+        Args:
+            role (Optional[str]): Raw role value (may include legacy English aliases)
+        
+        Returns:
+            str: Normalized role value (админ/бариста)
+        
+        Raises:
+            ValueError: If role is missing or unsupported
+        """
+        if role is None:
+            raise ValueError("Role value is required")
+        
+        role_value = role.strip().lower()
+        if not role_value:
+            raise ValueError("Role value is required")
+        
+        admin_aliases = {
+            User.ROLE_ADMIN,
+            User.ROLE_ADMIN_LEGACY,
+            'администратор',
+            'administrator'
+        }
+        barista_aliases = {
+            User.ROLE_BARISTA,
+            User.ROLE_BARISTA_LEGACY
+        }
+        
+        if role_value in admin_aliases:
+            return User.ROLE_ADMIN
+        if role_value in barista_aliases:
+            return User.ROLE_BARISTA
+        
+        raise ValueError(f"Unsupported role value: {role}")
+    
+    @staticmethod
     def create_user(telegram_id: int, username: str = None, 
                    first_name: str = None, last_name: str = None,
                    role: str = User.ROLE_BARISTA, created_by: int = None) -> Optional[User]:
@@ -376,7 +415,7 @@ class AuthManager:
             username (str): Telegram username
             first_name (str): User first name
             last_name (str): User last name
-            role (str): User role (admin/barista)
+            role (str): User role (админ/бариста, legacy английские значения поддерживаются)
             created_by (int): ID of user who created this user
             
         Returns:
@@ -395,12 +434,14 @@ class AuthManager:
                     logger.warning(f"User {telegram_id} already exists")
                     return existing_user
                 
+                normalized_role = AuthManager.normalize_role(role)
+                
                 user = User(
                     telegram_id=telegram_id,
                     username=username,
                     first_name=first_name,
                     last_name=last_name,
-                    role=role,
+                    role=normalized_role,
                     status=User.STATUS_PENDING,
                     created_by=created_by
                 )
@@ -538,7 +579,7 @@ class AuthManager:
         Get users by role.
         
         Args:
-            role (str): User role (admin/barista)
+            role (str): User role (админ/бариста)
             
         Returns:
             list[User]: List of users with specified role
@@ -546,8 +587,20 @@ class AuthManager:
         from ..services.database import get_session
         
         try:
+            normalized_role = AuthManager.normalize_role(role)
+        except ValueError:
+            logger.error(f"Unsupported role requested: {role}")
+            return []
+        
+        role_values = {normalized_role}
+        if normalized_role == User.ROLE_ADMIN:
+            role_values.add(User.ROLE_ADMIN_LEGACY)
+        else:
+            role_values.add(User.ROLE_BARISTA_LEGACY)
+        
+        try:
             with get_session() as session:
-                users = session.query(User).filter(User.role == role).all()
+                users = session.query(User).filter(User.role.in_(role_values)).all()
                 # Detach users from session
                 for user in users:
                     session.expunge(user)
@@ -561,8 +614,8 @@ def require_auth(required_role: str = None):
     """
     Decorator to require authentication for functions.
     
-    Args:
-        required_role (str): Required role (admin/barista), None for any active user
+        Args:
+            required_role (str): Required role (админ/бариста), None for any active user
     """
     def decorator(func):
         @wraps(func)
@@ -590,7 +643,14 @@ def require_auth(required_role: str = None):
                 return
             
             # Check role if required
-            if required_role == 'admin' and not user.is_admin():
+            normalized_required_role = None
+            if required_role:
+                try:
+                    normalized_required_role = AuthManager.normalize_role(required_role)
+                except ValueError:
+                    normalized_required_role = required_role.strip().lower()
+            
+            if normalized_required_role == User.ROLE_ADMIN and not user.is_admin():
                 await update.message.reply_text(
                     "❌ У вас нет прав администратора для выполнения этого действия."
                 )

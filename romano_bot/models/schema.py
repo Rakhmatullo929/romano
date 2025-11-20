@@ -80,13 +80,15 @@ class User(Base):
     """
     Users model for role-based access control.
     
-    Stores user information with roles (admin, barista) and activity tracking.
+    Stores user information with roles (админ, бариста) and activity tracking.
     """
     __tablename__ = 'users'
     
-    # User roles
-    ROLE_ADMIN = 'admin'
-    ROLE_BARISTA = 'barista'
+    # User roles (stored in Russian for clarity)
+    ROLE_ADMIN = 'админ'
+    ROLE_BARISTA = 'бариста'
+    ROLE_ADMIN_LEGACY = 'admin'
+    ROLE_BARISTA_LEGACY = 'barista'
     
     # User statuses
     STATUS_ACTIVE = 'active'
@@ -98,7 +100,11 @@ class User(Base):
     username = Column(String(100), nullable=True)
     first_name = Column(String(100), nullable=True)
     last_name = Column(String(100), nullable=True)
-    role = Column(String(20), nullable=False, default=ROLE_BARISTA)  # admin, barista
+    role = Column(
+        String(20),
+        nullable=False,
+        default=ROLE_BARISTA
+    )  # админ, бариста
     status = Column(String(20), nullable=False, default=STATUS_PENDING)  # active, inactive, pending
     is_active = Column(Boolean, default=True)
     created_at = Column(DateTime, default=datetime.utcnow)
@@ -107,11 +113,17 @@ class User(Base):
     
     def is_admin(self) -> bool:
         """Check if user is admin"""
-        return self.role == self.ROLE_ADMIN and self.status == self.STATUS_ACTIVE
+        return (
+            self.role in {self.ROLE_ADMIN, self.ROLE_ADMIN_LEGACY}
+            and self.status == self.STATUS_ACTIVE
+        )
     
     def is_barista(self) -> bool:
         """Check if user is barista"""
-        return self.role == self.ROLE_BARISTA and self.status == self.STATUS_ACTIVE
+        return (
+            self.role in {self.ROLE_BARISTA, self.ROLE_BARISTA_LEGACY}
+            and self.status == self.STATUS_ACTIVE
+        )
     
     def can_manage_users(self) -> bool:
         """Check if user can manage other users"""

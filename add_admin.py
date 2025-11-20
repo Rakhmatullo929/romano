@@ -1,19 +1,19 @@
 #!/usr/bin/env python3
 """
-Script to add admin user to Romano Bot database
+Script to add админ user to Romano Bot database.
 
 Usage:
     python add_admin.py <telegram_id> <first_name>
     
 Example:
-    python add_admin.py 279498964 "Admin Name"
+    python add_admin.py 279498964 "Админ"
 """
 import sys
 from romano_bot.services.database import get_session
 from romano_bot.models.schema import User
 
 
-def add_admin(telegram_id: int, first_name: str = "Admin"):
+def add_admin(telegram_id: int, first_name: str = "Админ"):
     """Add admin user to database"""
     with get_session() as session:
         # Check if user already exists
@@ -25,7 +25,7 @@ def add_admin(telegram_id: int, first_name: str = "Admin"):
             existing_user.status = User.STATUS_ACTIVE
             existing_user.first_name = first_name
             existing_user.is_active = True
-            print(f"✓ Updated user {telegram_id} to admin role")
+            print(f"✓ Пользователь {telegram_id} обновлён до роли админ")
         else:
             # Create new admin user
             admin_user = User(
@@ -36,23 +36,23 @@ def add_admin(telegram_id: int, first_name: str = "Admin"):
                 is_active=True
             )
             session.add(admin_user)
-            print(f"✓ Created new admin user {telegram_id}")
+            print(f"✓ Создан новый админ {telegram_id}")
         
         session.commit()
-        print(f"\n✓ Admin user {telegram_id} ({first_name}) is now active in the database")
-        print(f"✓ Make sure this ID is in ADMIN_IDS list in config.py: {telegram_id}")
+        print(f"\n✓ Админ {telegram_id} ({first_name}) активирован в базе данных")
+        print(f"✓ Добавьте этот ID в список ADMIN_IDS в config.py: {telegram_id}")
 
 
 if __name__ == "__main__":
     if len(sys.argv) < 2:
-        print("Usage: python add_admin.py <telegram_id> [first_name]")
-        print("\nExample:")
-        print("  python add_admin.py 279498964 Admin")
+        print("Использование: python add_admin.py <telegram_id> [first_name]")
+        print("\nПример:")
+        print("  python add_admin.py 279498964 Админ")
         sys.exit(1)
     
     try:
         telegram_id = int(sys.argv[1])
-        first_name = sys.argv[2] if len(sys.argv) > 2 else "Admin"
+        first_name = sys.argv[2] if len(sys.argv) > 2 else "Админ"
         add_admin(telegram_id, first_name)
     except ValueError:
         print("❌ Error: Telegram ID must be a number")

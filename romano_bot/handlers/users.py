@@ -7,9 +7,11 @@ for the Romano Coffee Shop bot with role-based access control.
 Author: Romano Bot Team
 Version: 1.0.0
 """
+from datetime import datetime
+from typing import Optional
+
 from telegram import Update, ReplyKeyboardMarkup, ReplyKeyboardRemove
 from telegram.ext import ContextTypes
-from datetime import datetime
 
 from ..models.schema import User
 from ..utils.helpers import logger, AuthManager, require_auth
@@ -44,6 +46,25 @@ class UsersHandler:
         self.back_to_users_keyboard = ReplyKeyboardMarkup([
             ['🔙 Назад к пользователям']
         ], resize_keyboard=True)
+    
+    @staticmethod
+    def _format_role_value(role: Optional[str]) -> str:
+        """
+        Convert stored role value to a user-friendly Russian label.
+        
+        Args:
+            role (Optional[str]): Stored role value
+        
+        Returns:
+            str: Readable role string for UI
+        """
+        if not role:
+            return "не указана"
+        
+        try:
+            return AuthManager.normalize_role(role)
+        except ValueError:
+            return role
     
     async def show_users_menu(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Show users management menu (admin only)"""
@@ -83,10 +104,11 @@ class UsersHandler:
                 return
             
             message = "👥 <b>Список пользователей</b>\n\n"
+            admin_role_values = {User.ROLE_ADMIN, User.ROLE_ADMIN_LEGACY}
             
             for user_obj in users:
                 try:
-                    role_emoji = "👑" if user_obj.role == User.ROLE_ADMIN else "☕"
+                    role_emoji = "👑" if user_obj.role in admin_role_values else "☕"
                     status_emoji = "✅" if user_obj.status == User.STATUS_ACTIVE else "❌" if user_obj.status == User.STATUS_INACTIVE else "⏳"
                     
                     name = user_obj.first_name or "Неизвестно"
@@ -101,9 +123,11 @@ class UsersHandler:
                     except Exception:
                         created_date = "Неизвестно"
                     
+                    role_label = self._format_role_value(user_obj.role)
+                    
                     message += f"{role_emoji} <b>{name}</b>\n"
                     message += f"   ID: {user_obj.telegram_id}\n"
-                    message += f"   Роль: {user_obj.role}\n"
+                    message += f"   Роль: {role_label}\n"
                     message += f"   Статус: {status_emoji} {user_obj.status}\n"
                     message += f"   Создан: {created_date}\n\n"
                 except Exception as e:
@@ -134,8 +158,8 @@ class UsersHandler:
                 "➕ <b>Добавление пользователя</b>\n\n"
                 "Введите данные в формате:\n"
                 "<code>Telegram ID | Имя | Фамилия | Роль</code>\n\n"
-                "Пример: <code>123456789 | Иван | Петров | barista</code>\n"
-                "Роли: admin, barista",
+                "Пример: <code>123456789 | Иван | Петров | бариста</code>\n"
+                "Роли: админ, бариста",
                 reply_markup=self.back_to_users_keyboard,
                 parse_mode='HTML'
             )
@@ -171,8 +195,10 @@ class UsersHandler:
                 raise ValueError("Telegram ID должен быть числом")
             
             # Validate role
-            if role not in [User.ROLE_ADMIN, User.ROLE_BARISTA]:
-                raise ValueError("Роль должна быть 'admin' или 'barista'")
+            try:
+                normalized_role = AuthManager.normalize_role(role)
+            except ValueError:
+                raise ValueError("Роль должна быть 'админ' или 'бариста'")
             
             # Get admin user for created_by
             admin_user = AuthManager.get_user(user_id)
@@ -183,7 +209,7 @@ class UsersHandler:
                 telegram_id=telegram_id,
                 first_name=first_name,
                 last_name=last_name,
-                role=role,
+                role=normalized_role,
                 created_by=created_by
             )
             
@@ -192,12 +218,13 @@ class UsersHandler:
                     f"✅ <b>Пользователь добавлен!</b>\n\n"
                     f"👤 <b>Имя:</b> {first_name} {last_name}\n"
                     f"🆔 <b>ID:</b> {telegram_id}\n"
-                    f"👑 <b>Роль:</b> {role}\n"
+                    f"👑 <b>Роль:</b> {normalized_role}\n"
                     f"⏳ <b>Статус:</b> Ожидает активации",
                     reply_markup=self.admin_keyboard,
                     parse_mode='HTML'
                 )
-                logger.info(f"Admin {user.telegram_id} added user {telegram_id}")
+                actor_id = admin_user.telegram_id if admin_user else user_id
+                logger.info(f"Admin {actor_id} added user {telegram_id}")
             else:
                 await update.message.reply_text(
                     "❌ Ошибка при создании пользователя.",
@@ -238,8 +265,10 @@ class UsersHandler:
             message = "👥 <b>Управление ролями</b>\n\n"
             message += "Введите ID пользователя для изменения роли:\n\n"
             
+            admin_role_values = {User.ROLE_ADMIN, User.ROLE_ADMIN_LEGACY}
+            
             for user_obj in active_users:
-                role_emoji = "👑" if user_obj.role == User.ROLE_ADMIN else "☕"
+                role_emoji = "👑" if user_obj.role in admin_role_values else "☕"
                 name = user_obj.first_name or "Неизвестно"
                 if user_obj.last_name:
                     name += f" {user_obj.last_name}"
@@ -254,7 +283,7 @@ class UsersHandler:
             context.user_data['state'] = 'selecting_user_for_role'
             
         except Exception as e:
-            logger.error(f"Error showing role management: {str(e)}", user.telegram_id)
+            logger.error(f"Error showing role management: {str(e)}", user_id)
             await update.message.reply_text(
                 "❌ Произошла ошибка. Попробуйте еще раз."
             )
@@ -282,10 +311,12 @@ class UsersHandler:
             if selected_user.last_name:
                 name += f" {selected_user.last_name}"
             
+            current_role = self._format_role_value(selected_user.role)
+            
             await update.message.reply_text(
                 f"👤 <b>Выбран пользователь:</b> {name}\n"
                 f"🆔 <b>ID:</b> {telegram_id}\n"
-                f"👑 <b>Текущая роль:</b> {selected_user.role}\n\n"
+                f"👑 <b>Текущая роль:</b> {current_role}\n\n"
                 "Выберите новую роль:",
                 reply_markup=self.role_keyboard,
                 parse_mode='HTML'
@@ -338,6 +369,9 @@ class UsersHandler:
                     user_to_update.role = new_role
                     session.commit()
                     
+                    old_role_label = self._format_role_value(old_role)
+                    new_role_label = self._format_role_value(new_role)
+                    
                     name = user_to_update.first_name or "Неизвестно"
                     if user_to_update.last_name:
                         name += f" {user_to_update.last_name}"
@@ -345,12 +379,15 @@ class UsersHandler:
                     await update.message.reply_text(
                         f"✅ <b>Роль изменена!</b>\n\n"
                         f"👤 <b>Пользователь:</b> {name}\n"
-                        f"👑 <b>Старая роль:</b> {old_role}\n"
-                        f"👑 <b>Новая роль:</b> {new_role}",
+                        f"👑 <b>Старая роль:</b> {old_role_label}\n"
+                        f"👑 <b>Новая роль:</b> {new_role_label}",
                         reply_markup=self.admin_keyboard,
                         parse_mode='HTML'
                     )
-                    logger.info(f"Admin {user.telegram_id} changed role for user {selected_user_id} from {old_role} to {new_role}")
+                    logger.info(
+                        f"Admin {user.telegram_id} changed role for user "
+                        f"{selected_user_id} from {old_role_label} to {new_role_label}"
+                    )
                 else:
                     await update.message.reply_text(
                         "❌ Пользователь не найден.",
@@ -367,7 +404,7 @@ class UsersHandler:
                 reply_markup=self.admin_keyboard
             )
     
-    @require_auth('admin')
+    @require_auth('админ')
     async def user_statistics(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Show user statistics (admin only)"""
         user = context.user
@@ -382,8 +419,8 @@ class UsersHandler:
             active_users = len([u for u in users if u.status == User.STATUS_ACTIVE])
             inactive_users = len([u for u in users if u.status == User.STATUS_INACTIVE])
             pending_users = len([u for u in users if u.status == User.STATUS_PENDING])
-            admin_users = len([u for u in users if u.role == User.ROLE_ADMIN])
-            barista_users = len([u for u in users if u.role == User.ROLE_BARISTA])
+            admin_users = len([u for u in users if u.role in {User.ROLE_ADMIN, User.ROLE_ADMIN_LEGACY}])
+            barista_users = len([u for u in users if u.role in {User.ROLE_BARISTA, User.ROLE_BARISTA_LEGACY}])
             
             message = "📊 <b>Статистика пользователей</b>\n\n"
             message += f"👥 <b>Всего пользователей:</b> {total_users}\n"
