@@ -133,11 +133,16 @@ class SalesHandler:
         context.user_data['selected_category'] = category_name
         products = MENU_CATEGORIES[category_name]
         
-        # Build products keyboard
+        # Build products keyboard in two columns with block ordering (column-wise)
+        product_list = sorted(products.keys())  # Sort alphabetically
+        column_size = (len(product_list) + 1) // 2
+        first_column = product_list[:column_size]
+        second_column = product_list[column_size:]
         product_buttons = []
-        product_list = sorted(list(products.keys()))  # Sort alphabetically
-        for i in range(0, len(product_list), 2):
-            row = product_list[i:i+2]
+        for index in range(column_size):
+            row = [first_column[index]]
+            if index < len(second_column):
+                row.append(second_column[index])
             product_buttons.append(row)
         product_buttons.append(['🔙 Назад к категориям'])
         products_keyboard = ReplyKeyboardMarkup(product_buttons, resize_keyboard=True)
@@ -178,11 +183,16 @@ class SalesHandler:
         # Check if product exists in selected category
         products = MENU_CATEGORIES[selected_category]
         if product_name not in products:
-            # Build products keyboard again
+            # Build products keyboard again (two columns, block order)
+            product_list = sorted(products.keys())  # Sort alphabetically
+            column_size = (len(product_list) + 1) // 2
+            first_column = product_list[:column_size]
+            second_column = product_list[column_size:]
             product_buttons = []
-            product_list = sorted(list(products.keys()))  # Sort alphabetically
-            for i in range(0, len(product_list), 2):
-                row = product_list[i:i+2]
+            for index in range(column_size):
+                row = [first_column[index]]
+                if index < len(second_column):
+                    row.append(second_column[index])
                 product_buttons.append(row)
             product_buttons.append(['🔙 Назад к категориям'])
             products_keyboard = ReplyKeyboardMarkup(product_buttons, resize_keyboard=True)
