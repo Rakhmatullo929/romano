@@ -48,7 +48,7 @@ users_handler = UsersHandler()
 
 # Main menu keyboard
 MAIN_KEYBOARD = ReplyKeyboardMarkup([
-    ['💰 Продажи', '💸 Расходы'],
+    ['💰 Продажа', '💸 Расходы'],
     ['📊 Отчеты', '💰 Баланс'],
     ['👥 Пользователи', 'ℹ️ Помощь']
 ], resize_keyboard=True)
@@ -175,7 +175,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 ℹ️ <b>Помощь по использованию бота</b>
 
 <b>Основные разделы:</b>
-💰 <b>Продажи</b> - добавление и просмотр продаж
+💰 <b>Продажа</b> - добавление и просмотр продаж
 💸 <b>Расходы</b> - управление расходами
 📊 <b>Отчеты</b> - генерация отчетов и аналитика
 💰 <b>Баланс</b> - управление балансом
@@ -192,8 +192,8 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
 <b>Поддержка:</b>
 Если у вас есть вопросы, обратитесь к администратору.
-    """
-    
+        """
+        
         await update.message.reply_text(help_text, parse_mode='HTML')
         logger.info(f"Help sent to user {user_id}")
         
@@ -514,7 +514,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             return
         
         # Handle menu selections
-        if text == '💰 Продажи':
+        if text == '💰 Продажа':
             if user.can_add_sales():
                 await sales_handler.add_sale(update, context)
             else:
