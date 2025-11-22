@@ -17,6 +17,7 @@ from ..services.database import get_session
 from ..utils.helpers import format_currency, logger
 from ..config import PRODUCT_PRICES, MENU_CATEGORIES
 from ..services.notifier import notify_group, format_sale_notification
+from ..services.barista_session import BaristaSessionManager
 
 
 class SalesHandler:
@@ -87,6 +88,17 @@ class SalesHandler:
     
     async def add_sale(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Start adding new sale - show categories menu"""
+        # Проверить наличие активного бариста
+        active_barista = BaristaSessionManager.get_active_barista(context)
+        if not active_barista:
+            await update.message.reply_text(
+                "⚠️ <b>Активный бариста не выбран</b>\n\n"
+                "Перед добавлением продажи необходимо выбрать активного бариста.\n"
+                "Используйте меню '👤 Переключить бариста' для выбора.",
+                parse_mode='HTML'
+            )
+            return
+        
         # Clear any previous sale data
         context.user_data.pop('sale_data', None)
         context.user_data.pop('state', None)
@@ -548,7 +560,26 @@ class SalesHandler:
         try:
             sale_data = context.user_data['sale_data']
             
+            # Получить активного бариста
+            active_barista = BaristaSessionManager.get_active_barista(context)
+            if not active_barista:
+                await update.message.reply_text(
+                    "❌ <b>Ошибка:</b> Активный бариста не выбран.\n"
+                    "Пожалуйста, выберите активного бариста перед сохранением продажи.",
+                    parse_mode='HTML'
+                )
+                return
+            
+            # Получить user_id из базы данных (не telegram_id, а id)
+            # Используем тот же session для получения user_id
             with get_session() as session:
+                from ..models.schema import User
+                db_user = session.query(User).filter(
+                    User.telegram_id == active_barista.telegram_id
+                ).first()
+                user_id = db_user.id if db_user else None
+                
+                # Теперь создаем продажу в том же session
                 sale = Sale(
                     product_name=sale_data['product_name'],
                     quantity=sale_data['quantity'],
@@ -557,7 +588,8 @@ class SalesHandler:
                     discount_amount=sale_data.get('discount_amount', 0),
                     subtotal=sale_data['subtotal'],
                     total_amount=sale_data['total_amount'],
-                    payment_method=sale_data['payment_method']
+                    payment_method=sale_data['payment_method'],
+                    user_id=user_id
                 )
                 session.add(sale)
                 session.flush()  # Flush to get sale.id

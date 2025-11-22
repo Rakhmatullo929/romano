@@ -15,6 +15,7 @@ from telegram.ext import ContextTypes
 
 from ..models.schema import User
 from ..utils.helpers import logger, AuthManager, require_auth
+from ..services.barista_session import BaristaSessionManager
 
 
 class UsersHandler:
@@ -28,8 +29,8 @@ class UsersHandler:
     def __init__(self):
         self.admin_keyboard = ReplyKeyboardMarkup([
             ['👥 Список пользователей', '➕ Добавить пользователя'],
-            ['🔧 Управление ролями', '📊 Статистика пользователей'],
-            ['🔙 Главное меню']
+            ['⏳ Ожидающие активации', '🔧 Управление ролями'],
+            ['📊 Статистика пользователей', '🔙 Главное меню']
         ], resize_keyboard=True)
         
         self.role_keyboard = ReplyKeyboardMarkup([
@@ -447,6 +448,290 @@ class UsersHandler:
                 "❌ Произошла ошибка при получении статистики."
             )
     
+    async def list_pending_users(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """
+        Show list of users waiting for activation (admin only).
+        
+        Args:
+            update (Update): Telegram update object
+            context (ContextTypes.DEFAULT_TYPE): Bot context
+        """
+        user_id = update.effective_user.id
+        
+        try:
+            logger.info(f"Admin {user_id} requested pending users list")
+            
+            users = AuthManager.get_all_users()
+            pending_users = [u for u in users if u.status == User.STATUS_PENDING]
+            
+            if not pending_users:
+                await update.message.reply_text(
+                    "⏳ <b>Ожидающие активации</b>\n\n"
+                    "Нет пользователей, ожидающих активации.",
+                    reply_markup=self.admin_keyboard,
+                    parse_mode='HTML'
+                )
+                return
+            
+            message = "⏳ <b>Пользователи, ожидающие активации</b>\n\n"
+            message += "Введите ID пользователя для активации:\n\n"
+            
+            admin_role_values = {User.ROLE_ADMIN, User.ROLE_ADMIN_LEGACY}
+            
+            for user_obj in pending_users:
+                role_emoji = "👑" if user_obj.role in admin_role_values else "☕"
+                name = user_obj.first_name or "Неизвестно"
+                if user_obj.last_name:
+                    name += f" {user_obj.last_name}"
+                
+                role_label = self._format_role_value(user_obj.role)
+                
+                # Safely get created_at
+                created_date = ""
+                try:
+                    if user_obj.created_at:
+                        created_date = user_obj.created_at.strftime('%d.%m.%Y') if isinstance(user_obj.created_at, datetime) else str(user_obj.created_at)
+                except Exception:
+                    created_date = "Неизвестно"
+                
+                message += f"{role_emoji} <b>{name}</b>\n"
+                message += f"   ID: {user_obj.telegram_id}\n"
+                message += f"   Роль: {role_label}\n"
+                message += f"   Создан: {created_date}\n\n"
+            
+            await update.message.reply_text(
+                message,
+                reply_markup=self.user_management_keyboard,
+                parse_mode='HTML'
+            )
+            context.user_data['state'] = 'selecting_user_for_activation'
+            
+        except Exception as e:
+            logger.error(f"Error listing pending users: {str(e)}", user_id)
+            await update.message.reply_text(
+                "❌ Произошла ошибка при получении списка пользователей."
+            )
+    
+    async def handle_user_activation_selection(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """
+        Handle user selection for activation/deactivation.
+        
+        Args:
+            update (Update): Telegram update object
+            context (ContextTypes.DEFAULT_TYPE): Bot context
+        """
+        user = context.user
+        
+        try:
+            telegram_id = int(update.message.text.strip())
+            
+            # Get selected user
+            selected_user = AuthManager.get_user(telegram_id)
+            if not selected_user:
+                await update.message.reply_text(
+                    "❌ Пользователь не найден. Попробуйте еще раз:",
+                    reply_markup=self.user_management_keyboard
+                )
+                return
+            
+            # Store selected user
+            context.user_data['selected_user_id'] = telegram_id
+            
+            name = selected_user.first_name or "Неизвестно"
+            if selected_user.last_name:
+                name += f" {selected_user.last_name}"
+            
+            role_label = self._format_role_value(selected_user.role)
+            status_emoji = "✅" if selected_user.status == User.STATUS_ACTIVE else "❌" if selected_user.status == User.STATUS_INACTIVE else "⏳"
+            
+            await update.message.reply_text(
+                f"👤 <b>Выбран пользователь:</b> {name}\n"
+                f"🆔 <b>ID:</b> {telegram_id}\n"
+                f"👑 <b>Роль:</b> {role_label}\n"
+                f"📊 <b>Статус:</b> {status_emoji} {selected_user.status}\n\n"
+                "Выберите действие:",
+                reply_markup=self.user_management_keyboard,
+                parse_mode='HTML'
+            )
+            context.user_data['state'] = 'managing_user_status'
+            
+        except ValueError:
+            await update.message.reply_text(
+                "❌ Неверный ID пользователя. Введите числовой ID:",
+                reply_markup=self.user_management_keyboard
+            )
+        except Exception as e:
+            logger.error(f"Error handling user activation selection: {str(e)}", user.telegram_id)
+            await update.message.reply_text(
+                "❌ Произошла ошибка. Попробуйте еще раз."
+            )
+    
+    async def activate_user(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """
+        Activate selected user (admin only).
+        
+        Args:
+            update (Update): Telegram update object
+            context (ContextTypes.DEFAULT_TYPE): Bot context
+        """
+        user = context.user
+        
+        try:
+            selected_user_id = context.user_data.get('selected_user_id')
+            
+            if not selected_user_id:
+                # Try to get from message if user typed ID directly
+                try:
+                    selected_user_id = int(update.message.text.strip())
+                    context.user_data['selected_user_id'] = selected_user_id
+                except ValueError:
+                    # Show list of pending users if no user selected
+                    await update.message.reply_text(
+                        "⚠️ <b>Пользователь не выбран</b>\n\n"
+                        "Сначала введите ID пользователя из списка выше, "
+                        "затем нажмите кнопку '✅ Активировать'.",
+                        reply_markup=self.user_management_keyboard,
+                        parse_mode='HTML'
+                    )
+                    # Show list again
+                    await self.list_pending_users(update, context)
+                    return
+            
+            # Verify user exists before activation
+            selected_user = AuthManager.get_user(selected_user_id)
+            if not selected_user:
+                await update.message.reply_text(
+                    f"❌ Пользователь с ID {selected_user_id} не найден.",
+                    reply_markup=self.admin_keyboard
+                )
+                context.user_data.pop('selected_user_id', None)
+                context.user_data.pop('state', None)
+                return
+            
+            # Check if user is already active
+            if selected_user.status == User.STATUS_ACTIVE:
+                name = selected_user.first_name or "Неизвестно"
+                if selected_user.last_name:
+                    name += f" {selected_user.last_name}"
+                await update.message.reply_text(
+                    f"ℹ️ <b>Пользователь уже активирован</b>\n\n"
+                    f"👤 <b>Имя:</b> {name}\n"
+                    f"🆔 <b>ID:</b> {selected_user_id}\n"
+                    f"📊 <b>Статус:</b> ✅ Активен",
+                    reply_markup=self.admin_keyboard,
+                    parse_mode='HTML'
+                )
+                context.user_data.pop('selected_user_id', None)
+                context.user_data.pop('state', None)
+                return
+            
+            # Activate user
+            success = AuthManager.activate_user(selected_user_id)
+            
+            if success:
+                # Refresh user data after activation
+                selected_user = AuthManager.get_user(selected_user_id)
+                name = selected_user.first_name or "Неизвестно"
+                if selected_user.last_name:
+                    name += f" {selected_user.last_name}"
+                
+                await update.message.reply_text(
+                    f"✅ <b>Пользователь активирован!</b>\n\n"
+                    f"👤 <b>Имя:</b> {name}\n"
+                    f"🆔 <b>ID:</b> {selected_user_id}\n"
+                    f"📊 <b>Статус:</b> ✅ Активен\n\n"
+                    f"Теперь пользователь может использовать бота.",
+                    reply_markup=self.admin_keyboard,
+                    parse_mode='HTML'
+                )
+                logger.info(
+                    f"Admin {user.telegram_id} activated user {selected_user_id}"
+                )
+            else:
+                await update.message.reply_text(
+                    "❌ Ошибка при активации пользователя.\n"
+                    "Попробуйте еще раз или обратитесь к администратору.",
+                    reply_markup=self.admin_keyboard
+                )
+                logger.error(
+                    f"Failed to activate user {selected_user_id} by admin {user.telegram_id}"
+                )
+            
+            context.user_data.pop('selected_user_id', None)
+            context.user_data.pop('state', None)
+            
+        except Exception as e:
+            logger.error(f"Error activating user: {str(e)}", user.telegram_id)
+            await update.message.reply_text(
+                f"❌ Ошибка: {str(e)}",
+                reply_markup=self.admin_keyboard
+            )
+    
+    async def deactivate_user(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """
+        Deactivate selected user (admin only).
+        
+        Args:
+            update (Update): Telegram update object
+            context (ContextTypes.DEFAULT_TYPE): Bot context
+        """
+        user = context.user
+        
+        try:
+            selected_user_id = context.user_data.get('selected_user_id')
+            
+            if not selected_user_id:
+                # Try to get from message if user typed ID directly
+                try:
+                    selected_user_id = int(update.message.text.strip())
+                    context.user_data['selected_user_id'] = selected_user_id
+                except ValueError:
+                    # Show list of all users for deactivation
+                    await self.list_users(update, context)
+                    await update.message.reply_text(
+                        "Введите ID пользователя для деактивации:",
+                        reply_markup=self.user_management_keyboard
+                    )
+                    context.user_data['state'] = 'selecting_user_for_activation'
+                    return
+            
+            # Deactivate user
+            success = AuthManager.deactivate_user(selected_user_id)
+            
+            if success:
+                selected_user = AuthManager.get_user(selected_user_id)
+                name = selected_user.first_name or "Неизвестно"
+                if selected_user.last_name:
+                    name += f" {selected_user.last_name}"
+                
+                await update.message.reply_text(
+                    f"❌ <b>Пользователь деактивирован!</b>\n\n"
+                    f"👤 <b>Имя:</b> {name}\n"
+                    f"🆔 <b>ID:</b> {selected_user_id}\n"
+                    f"📊 <b>Статус:</b> ❌ Неактивен",
+                    reply_markup=self.admin_keyboard,
+                    parse_mode='HTML'
+                )
+                logger.info(
+                    f"Admin {user.telegram_id} deactivated user {selected_user_id}"
+                )
+            else:
+                await update.message.reply_text(
+                    "❌ Ошибка при деактивации пользователя.\n"
+                    "Пользователь не найден.",
+                    reply_markup=self.admin_keyboard
+                )
+            
+            context.user_data.pop('selected_user_id', None)
+            context.user_data.pop('state', None)
+            
+        except Exception as e:
+            logger.error(f"Error deactivating user: {str(e)}", user.telegram_id)
+            await update.message.reply_text(
+                f"❌ Ошибка: {str(e)}",
+                reply_markup=self.admin_keyboard
+            )
+    
     async def register_user(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Register new user (self-registration)"""
         user_id = update.effective_user.id
@@ -498,3 +783,163 @@ class UsersHandler:
             await update.message.reply_text(
                 "❌ Произошла ошибка при регистрации."
             )
+    
+    async def switch_barista(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """
+        Показать меню выбора активного бариста.
+        
+        Позволяет выбрать активного бариста из списка всех активных бариста.
+        Все последующие операции будут привязаны к выбранному бариста.
+        
+        Args:
+            update (Update): Telegram update object
+            context (ContextTypes.DEFAULT_TYPE): Bot context
+        """
+        user_id = update.effective_user.id
+        
+        try:
+            logger.info(f"User {user_id} opened barista switch menu")
+            
+            # Получить список всех активных бариста
+            baristas = BaristaSessionManager.get_all_active_baristas()
+            
+            if not baristas:
+                await update.message.reply_text(
+                    "⚠️ <b>Нет активных бариста</b>\n\n"
+                    "В системе нет активных бариста для выбора.\n"
+                    "Обратитесь к администратору для добавления бариста.",
+                    parse_mode='HTML'
+                )
+                return
+            
+            # Получить текущего активного бариста
+            current_barista = BaristaSessionManager.get_active_barista(context)
+            current_barista_id = current_barista.telegram_id if current_barista else None
+            
+            # Создать клавиатуру с кнопками бариста
+            barista_buttons = []
+            for barista in baristas:
+                name = BaristaSessionManager.format_barista_name(barista)
+                # Добавить индикатор текущего активного бариста
+                indicator = "✅ " if current_barista_id == barista.telegram_id else "☕ "
+                barista_buttons.append([f"{indicator}{name}"])
+            
+            barista_buttons.append(['🔙 Главное меню'])
+            
+            barista_keyboard = ReplyKeyboardMarkup(barista_buttons, resize_keyboard=True)
+            
+            # Сообщение с инструкцией
+            message = "👤 <b>Выбор активного бариста</b>\n\n"
+            if current_barista:
+                current_name = BaristaSessionManager.format_barista_name(current_barista)
+                message += f"✅ <b>Текущий активный бариста:</b> {current_name}\n\n"
+            else:
+                message += "⚠️ <b>Активный бариста не выбран</b>\n\n"
+            
+            message += "Выберите бариста из списка:\n\n"
+            for barista in baristas:
+                name = BaristaSessionManager.format_barista_name(barista)
+                message += f"☕ {name}\n"
+            
+            await update.message.reply_text(
+                message,
+                reply_markup=barista_keyboard,
+                parse_mode='HTML'
+            )
+            
+            # Установить состояние выбора бариста
+            context.user_data['state'] = 'selecting_barista'
+            
+        except Exception as e:
+            logger.error(f"Error showing barista switch menu: {str(e)}", user_id)
+            await update.message.reply_text(
+                "❌ Произошла ошибка. Попробуйте еще раз."
+            )
+    
+    async def handle_barista_selection(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """
+        Обработать выбор бариста из списка.
+        
+        Args:
+            update (Update): Telegram update object
+            context (ContextTypes.DEFAULT_TYPE): Bot context
+        """
+        user_id = update.effective_user.id
+        
+        try:
+            selected_text = update.message.text.strip()
+            
+            # Убрать индикаторы из текста
+            selected_text = selected_text.replace("✅ ", "").replace("☕ ", "").strip()
+            
+            # Найти бариста по имени
+            baristas = BaristaSessionManager.get_all_active_baristas()
+            selected_barista = None
+            
+            for barista in baristas:
+                barista_name = BaristaSessionManager.format_barista_name(barista)
+                if barista_name == selected_text:
+                    selected_barista = barista
+                    break
+            
+            if not selected_barista:
+                await update.message.reply_text(
+                    "❌ Бариста не найден. Пожалуйста, выберите из списка:",
+                    reply_markup=self._get_barista_keyboard(context)
+                )
+                return
+            
+            # Установить выбранного бариста как активного
+            success = BaristaSessionManager.set_active_barista(
+                selected_barista.telegram_id,
+                context
+            )
+            
+            if success:
+                barista_name = BaristaSessionManager.format_barista_name(selected_barista)
+                await update.message.reply_text(
+                    f"✅ <b>Активный бариста изменен!</b>\n\n"
+                    f"👤 <b>Выбранный бариста:</b> {barista_name}\n\n"
+                    f"Все последующие операции будут привязаны к этому бариста.",
+                    parse_mode='HTML'
+                )
+                logger.info(f"User {user_id} switched active barista to {selected_barista.telegram_id}")
+            else:
+                await update.message.reply_text(
+                    "❌ Ошибка при установке активного бариста.\n"
+                    "Попробуйте еще раз.",
+                    reply_markup=self._get_barista_keyboard(context)
+                )
+            
+            # Очистить состояние
+            context.user_data.pop('state', None)
+            
+        except Exception as e:
+            logger.error(f"Error handling barista selection: {str(e)}", user_id)
+            await update.message.reply_text(
+                "❌ Произошла ошибка. Попробуйте еще раз."
+            )
+    
+    def _get_barista_keyboard(self, context: ContextTypes.DEFAULT_TYPE) -> ReplyKeyboardMarkup:
+        """
+        Получить клавиатуру выбора бариста.
+        
+        Args:
+            context (ContextTypes.DEFAULT_TYPE): Bot context
+            
+        Returns:
+            ReplyKeyboardMarkup: Клавиатура с кнопками бариста
+        """
+        baristas = BaristaSessionManager.get_all_active_baristas()
+        current_barista = BaristaSessionManager.get_active_barista(context)
+        current_barista_id = current_barista.telegram_id if current_barista else None
+        
+        barista_buttons = []
+        for barista in baristas:
+            name = BaristaSessionManager.format_barista_name(barista)
+            indicator = "✅ " if current_barista_id == barista.telegram_id else "☕ "
+            barista_buttons.append([f"{indicator}{name}"])
+        
+        barista_buttons.append(['🔙 Главное меню'])
+        
+        return ReplyKeyboardMarkup(barista_buttons, resize_keyboard=True)

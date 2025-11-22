@@ -11,6 +11,7 @@ from ..services.database import get_session
 from ..utils.helpers import format_currency
 from ..config import EXPENSE_CATEGORIES
 from ..services.notifier import notify_group, format_expense_notification
+from ..services.barista_session import BaristaSessionManager
 
 
 class ExpensesHandler:
@@ -53,6 +54,17 @@ class ExpensesHandler:
     
     async def add_purchase(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Start adding purchase expense"""
+        # Проверить наличие активного бариста
+        active_barista = BaristaSessionManager.get_active_barista(context)
+        if not active_barista:
+            await update.message.reply_text(
+                "⚠️ <b>Активный бариста не выбран</b>\n\n"
+                "Перед добавлением расхода необходимо выбрать активного бариста.\n"
+                "Используйте меню '👤 Переключить бариста' для выбора.",
+                parse_mode='HTML'
+            )
+            return
+        
         # Clear any previous expense data
         context.user_data.pop('expense_data', None)
         context.user_data.pop('state', None)
@@ -68,6 +80,17 @@ class ExpensesHandler:
     
     async def add_salary(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Start adding salary expense"""
+        # Проверить наличие активного бариста
+        active_barista = BaristaSessionManager.get_active_barista(context)
+        if not active_barista:
+            await update.message.reply_text(
+                "⚠️ <b>Активный бариста не выбран</b>\n\n"
+                "Перед добавлением расхода необходимо выбрать активного бариста.\n"
+                "Используйте меню '👤 Переключить бариста' для выбора.",
+                parse_mode='HTML'
+            )
+            return
+        
         # Clear any previous expense data
         context.user_data.pop('expense_data', None)
         context.user_data.pop('state', None)
@@ -83,6 +106,17 @@ class ExpensesHandler:
     
     async def add_write_off(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Start adding write-off expense"""
+        # Проверить наличие активного бариста
+        active_barista = BaristaSessionManager.get_active_barista(context)
+        if not active_barista:
+            await update.message.reply_text(
+                "⚠️ <b>Активный бариста не выбран</b>\n\n"
+                "Перед добавлением расхода необходимо выбрать активного бариста.\n"
+                "Используйте меню '👤 Переключить бариста' для выбора.",
+                parse_mode='HTML'
+            )
+            return
+        
         # Clear any previous expense data
         context.user_data.pop('expense_data', None)
         context.user_data.pop('state', None)
@@ -235,14 +269,34 @@ class ExpensesHandler:
         try:
             expense_data = context.user_data['expense_data']
             
+            # Получить активного бариста
+            active_barista = BaristaSessionManager.get_active_barista(context)
+            if not active_barista:
+                await update.message.reply_text(
+                    "❌ <b>Ошибка:</b> Активный бариста не выбран.\n"
+                    "Пожалуйста, выберите активного бариста перед сохранением расхода.",
+                    parse_mode='HTML'
+                )
+                return
+            
+            # Получить user_id из базы данных (не telegram_id, а id)
+            # Используем тот же session для получения user_id
             with get_session() as session:
+                from ..models.schema import User
+                db_user = session.query(User).filter(
+                    User.telegram_id == active_barista.telegram_id
+                ).first()
+                user_id = db_user.id if db_user else None
+                
+                # Теперь создаем расход в том же session
                 expense = Expense(
                     category=expense_data['category'],
                     description=expense_data['description'],
                     amount=expense_data['amount'],
                     comment=expense_data.get('comment'),
                     employee_name=expense_data.get('employee_name'),
-                    payment_method=None  # Not required for these expense types
+                    payment_method=None,  # Not required for these expense types
+                    user_id=user_id
                 )
                 session.add(expense)
                 session.flush()  # Flush to get expense.id

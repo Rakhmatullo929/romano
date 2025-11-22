@@ -9,7 +9,7 @@ Version: 1.0.0
 """
 from datetime import datetime
 from decimal import Decimal
-from sqlalchemy import Column, Integer, String, DateTime, Numeric, Text, Boolean
+from sqlalchemy import Column, Integer, String, DateTime, Numeric, Text, Boolean, ForeignKey
 from sqlalchemy.ext.declarative import declarative_base
 
 Base = declarative_base()
@@ -34,6 +34,7 @@ class Sale(Base):
     total_amount = Column(Numeric(10, 2), nullable=False)  # Итоговая сумма
     payment_method = Column(String(50), nullable=False)  # cash, card, transfer
     notes = Column(Text, nullable=True)
+    user_id = Column(Integer, ForeignKey('users.id'), nullable=True)  # ID бариста, выполнившего продажу
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
@@ -54,6 +55,7 @@ class Expense(Base):
     comment = Column(Text, nullable=True)  # Дополнительные заметки
     employee_name = Column(String(100), nullable=True)  # Для зарплаты
     payment_method = Column(String(50), nullable=True)  # Опционально
+    user_id = Column(Integer, ForeignKey('users.id'), nullable=True)  # ID бариста, выполнившего расход
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow)
 

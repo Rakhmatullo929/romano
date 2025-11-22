@@ -27,6 +27,7 @@ try:
     from .handlers.users import UsersHandler
     from .utils.helpers import logger, GracefulShutdown, AuthManager, FileLock
     from .models.schema import User
+    from .services.barista_session import BaristaSessionManager
 except ImportError:
     # Fallback for direct execution
     from config import BOT_TOKEN, ADMIN_IDS, validate_config
@@ -46,12 +47,30 @@ reports_handler = ReportsHandler()
 balance_handler = BalanceHandler()
 users_handler = UsersHandler()
 
-# Main menu keyboard
-MAIN_KEYBOARD = ReplyKeyboardMarkup([
-    ['💰 Продажа', '💸 Расходы'],
-    ['📊 Отчеты', '💰 Баланс'],
-    ['👥 Пользователи', 'ℹ️ Помощь']
-], resize_keyboard=True)
+# Main menu keyboard (will be dynamically generated with active barista info)
+def get_main_keyboard(show_barista_switch: bool = True) -> ReplyKeyboardMarkup:
+    """
+    Получить главное меню с учетом активного бариста.
+    
+    Args:
+        show_barista_switch (bool): Показывать ли кнопку переключения бариста
+        
+    Returns:
+        ReplyKeyboardMarkup: Клавиатура главного меню
+    """
+    buttons = [
+        ['💰 Продажа', '💸 Расходы'],
+        ['📊 Отчеты', '💰 Баланс']
+    ]
+    
+    if show_barista_switch:
+        buttons.append(['👤 Переключить бариста'])
+    
+    buttons.append(['👥 Пользователи', 'ℹ️ Помощь'])
+    
+    return ReplyKeyboardMarkup(buttons, resize_keyboard=True)
+
+MAIN_KEYBOARD = get_main_keyboard()
 
 # Registration keyboard
 REGISTRATION_KEYBOARD = ReplyKeyboardMarkup([
@@ -131,12 +150,47 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         role_text = "Администратор" if user.is_admin() else "Бариста"
         name = user.first_name or "Пользователь"
         
-        await update.message.reply_text(
+        # Проверить наличие активного бариста (для бариста обязательно)
+        active_barista = BaristaSessionManager.get_active_barista(context)
+        active_barista_message = ""
+        
+        if user.is_barista():
+            if not active_barista:
+                # Для бариста нужно выбрать активного бариста перед началом работы
+                baristas = BaristaSessionManager.get_all_active_baristas()
+                
+                if not baristas:
+                    await update.message.reply_text(
+                        "⚠️ <b>Нет активных бариста</b>\n\n"
+                        "В системе нет активных бариста.\n"
+                        "Обратитесь к администратору.",
+                        parse_mode='HTML'
+                    )
+                    return
+                
+                # Показать меню выбора бариста
+                await users_handler.switch_barista(update, context)
+                return
+            else:
+                # Показать информацию об активном бариста
+                barista_name = BaristaSessionManager.format_barista_name(active_barista)
+                active_barista_message = f"\n👤 <b>Активный бариста:</b> {barista_name}\n"
+        
+        # Сформировать приветственное сообщение
+        welcome_message = (
             f"☕ <b>Добро пожаловать, {name}!</b>\n\n"
-            f"Роль: {role_text}\n"
+            f"Роль: {role_text}"
+            f"{active_barista_message}\n"
             f"Это бот для управления кофейней Romano.uz\n\n"
-            "Выберите раздел для работы:",
-            reply_markup=MAIN_KEYBOARD,
+            "Выберите раздел для работы:"
+        )
+        
+        # Получить главное меню (для бариста показывать кнопку переключения)
+        main_keyboard = get_main_keyboard(show_barista_switch=user.is_barista() or user.is_admin())
+        
+        await update.message.reply_text(
+            welcome_message,
+            reply_markup=main_keyboard,
             parse_mode='HTML'
         )
         
@@ -442,6 +496,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             context.user_data.pop('manual_quantity_input', None)
             await start(update, context)
             return
+        elif text == '👤 Переключить бариста':
+            await users_handler.switch_barista(update, context)
+            return
         elif text == '🔙 Назад к пользователям':
             # Clear any active state
             context.user_data.pop('state', None)
@@ -511,6 +568,45 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             return
         elif user_state == 'selecting_role':
             await users_handler.handle_role_selection(update, context)
+            return
+        elif user_state == 'selecting_user_for_activation':
+            # Check if it's a button press first
+            if text == '✅ Активировать':
+                # User clicked activate button without selecting user first
+                await update.message.reply_text(
+                    "⚠️ Сначала введите ID пользователя из списка выше, затем нажмите кнопку активации.",
+                    reply_markup=users_handler.user_management_keyboard
+                )
+                return
+            elif text == '❌ Деактивировать':
+                await update.message.reply_text(
+                    "⚠️ Сначала введите ID пользователя из списка выше, затем нажмите кнопку деактивации.",
+                    reply_markup=users_handler.user_management_keyboard
+                )
+                return
+            else:
+                # User typed ID, process it
+                await users_handler.handle_user_activation_selection(update, context)
+                return
+        elif user_state == 'selecting_barista':
+            # Handle barista selection
+            await users_handler.handle_barista_selection(update, context)
+            return
+        elif user_state == 'managing_user_status':
+            # Handle activation/deactivation buttons
+            if text == '✅ Активировать':
+                await users_handler.activate_user(update, context)
+                return
+            elif text == '❌ Деактивировать':
+                await users_handler.deactivate_user(update, context)
+                return
+            else:
+                # If user typed ID directly, try to select user
+                await users_handler.handle_user_activation_selection(update, context)
+                return
+        elif user_state == 'selecting_barista':
+            # Handle barista selection
+            await users_handler.handle_barista_selection(update, context)
             return
         
         # Handle menu selections
@@ -604,6 +700,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             await users_handler.list_users(update, context)
         elif text == '➕ Добавить пользователя':
             await users_handler.add_user(update, context)
+        elif text == '⏳ Ожидающие активации':
+            await users_handler.list_pending_users(update, context)
         elif text == '🔧 Управление ролями':
             await users_handler.manage_user_roles(update, context)
         elif text == '📊 Статистика пользователей':
@@ -612,6 +710,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             await users_handler.handle_role_selection(update, context)
         elif text == '☕ Бариста':
             await users_handler.handle_role_selection(update, context)
+        elif text == '✅ Активировать':
+            await users_handler.activate_user(update, context)
+        elif text == '❌ Деактивировать':
+            await users_handler.deactivate_user(update, context)
         
         else:
             await update.message.reply_text(
