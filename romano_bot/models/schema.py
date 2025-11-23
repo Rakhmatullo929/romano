@@ -78,6 +78,26 @@ class Balance(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
 
 
+class Shift(Base):
+    """
+    Shift management model.
+    
+    Stores information about work shifts including who opened and closed them,
+    timestamps, and shift status.
+    """
+    __tablename__ = 'shifts'
+    
+    id = Column(Integer, primary_key=True)
+    opened_by_user_id = Column(Integer, ForeignKey('users.id'), nullable=False)  # Кто открыл смену
+    closed_by_user_id = Column(Integer, ForeignKey('users.id'), nullable=True)  # Кто закрыл смену
+    opened_at = Column(DateTime, nullable=False, default=datetime.utcnow)  # Время открытия
+    closed_at = Column(DateTime, nullable=True)  # Время закрытия
+    is_open = Column(Boolean, default=True, nullable=False)  # Статус смены (открыта/закрыта)
+    notes = Column(Text, nullable=True)  # Дополнительные заметки при закрытии
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
 class User(Base):
     """
     Users model for role-based access control.

@@ -25,9 +25,11 @@ try:
     from .handlers.reports import ReportsHandler
     from .handlers.balance import BalanceHandler
     from .handlers.users import UsersHandler
+    from .handlers.shifts import ShiftsHandler
     from .utils.helpers import logger, GracefulShutdown, AuthManager, FileLock
-    from .models.schema import User
+    from .models.schema import User, Shift  # Import Shift to ensure it's registered in Base.metadata
     from .services.barista_session import BaristaSessionManager
+    from .services.shift_manager import ShiftManager
 except ImportError:
     # Fallback for direct execution
     from config import BOT_TOKEN, ADMIN_IDS, validate_config
@@ -37,8 +39,10 @@ except ImportError:
     from handlers.reports import ReportsHandler
     from handlers.balance import BalanceHandler
     from handlers.users import UsersHandler
+    from handlers.shifts import ShiftsHandler
     from utils.helpers import logger, GracefulShutdown, AuthManager, FileLock
-    from models.schema import User
+    from models.schema import User, Shift  # Import Shift to ensure it's registered in Base.metadata
+    from services.shift_manager import ShiftManager
 
 # Initialize handlers
 sales_handler = SalesHandler()
@@ -46,14 +50,16 @@ expenses_handler = ExpensesHandler()
 reports_handler = ReportsHandler()
 balance_handler = BalanceHandler()
 users_handler = UsersHandler()
+shifts_handler = ShiftsHandler()
 
 # Main menu keyboard (will be dynamically generated with active barista info)
-def get_main_keyboard(show_barista_switch: bool = True) -> ReplyKeyboardMarkup:
+def get_main_keyboard(show_barista_switch: bool = True, context: ContextTypes.DEFAULT_TYPE = None) -> ReplyKeyboardMarkup:
     """
-    Получить главное меню с учетом активного бариста.
+    Получить главное меню с учетом активного бариста и статуса смены.
     
     Args:
         show_barista_switch (bool): Показывать ли кнопку переключения бариста
+        context (ContextTypes.DEFAULT_TYPE, optional): Bot context для проверки статуса смены
         
     Returns:
         ReplyKeyboardMarkup: Клавиатура главного меню
@@ -63,14 +69,26 @@ def get_main_keyboard(show_barista_switch: bool = True) -> ReplyKeyboardMarkup:
         ['📊 Отчеты', '💰 Баланс']
     ]
     
+    # Добавить кнопки смены в зависимости от статуса
+    is_shift_open = ShiftManager.is_shift_open() if context is None else False
+    # Если context передан, можно проверить статус смены
+    # Но для простоты используем статическую проверку
+    try:
+        is_shift_open = ShiftManager.is_shift_open()
+    except Exception:
+        is_shift_open = False
+    
+    if is_shift_open:
+        buttons.append(['🔴 Закрыть смену'])
+    else:
+        buttons.append(['🟢 Открыть смену'])
+    
     if show_barista_switch:
         buttons.append(['👤 Переключить бариста'])
     
     buttons.append(['👥 Пользователи', 'ℹ️ Помощь'])
     
     return ReplyKeyboardMarkup(buttons, resize_keyboard=True)
-
-MAIN_KEYBOARD = get_main_keyboard()
 
 # Registration keyboard
 REGISTRATION_KEYBOARD = ReplyKeyboardMarkup([
@@ -634,6 +652,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                 await update.message.reply_text("❌ У вас нет прав для управления пользователями.")
         elif text == 'ℹ️ Помощь':
             await help_command(update, context)
+        elif text == '🟢 Открыть смену':
+            await shifts_handler.open_shift(update, context)
+        elif text == '🔴 Закрыть смену':
+            await shifts_handler.close_shift(update, context)
     
         # Sales menu handlers
         elif text == '💰 Добавить продажу':
@@ -716,9 +738,13 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             await users_handler.deactivate_user(update, context)
         
         else:
+            # Получить динамическую клавиатуру с учетом статуса смены
+            main_keyboard = get_main_keyboard(
+                show_barista_switch=user.is_barista() or user.is_admin()
+            )
             await update.message.reply_text(
                 "❓ Неизвестная команда. Используйте меню для навигации.",
-                reply_markup=MAIN_KEYBOARD
+                reply_markup=main_keyboard
             )
             logger.warning(f"Unknown command from user {user_id}: {text}")
     

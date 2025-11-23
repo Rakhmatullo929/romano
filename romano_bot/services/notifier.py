@@ -141,3 +141,53 @@ def format_report_notification(
     
     return message
 
+
+def format_shift_opened_notification(
+    username: str,
+    timestamp: datetime
+) -> str:
+    """
+    Форматирует уведомление об открытии смены.
+    
+    Args:
+        username (str): Имя пользователя, открывшего смену
+        timestamp (datetime): Время открытия смены
+        
+    Returns:
+        str: Отформатированное уведомление
+    """
+    message = "🟢 <b>Смена открыта</b>\n\n"
+    message += f"👤 <b>Открыл:</b> {username}\n"
+    message += f"🕒 <b>Время:</b> {format_datetime(timestamp)}"
+    
+    return message
+
+
+def format_shift_closed_notification(
+    username: str,
+    opened_by_username: str,
+    opened_at: datetime,
+    closed_at: datetime,
+    duration: str
+) -> str:
+    """
+    Форматирует уведомление о закрытии смены.
+    
+    Args:
+        username (str): Имя пользователя, закрывшего смену
+        opened_by_username (str): Имя пользователя, открывшего смену
+        opened_at (datetime): Время открытия смены
+        closed_at (datetime): Время закрытия смены
+        duration (str): Длительность смены в читаемом формате
+        
+    Returns:
+        str: Отформатированное уведомление
+    """
+    message = "🔴 <b>Смена закрыта</b>\n\n"
+    message += f"👤 <b>Закрыл:</b> {username}\n"
+    message += f"👤 <b>Открыл:</b> {opened_by_username}\n"
+    message += f"⏱️ <b>Длительность:</b> {duration}\n"
+    message += f"🕒 <b>Время закрытия:</b> {format_datetime(closed_at)}"
+    
+    return message
+
