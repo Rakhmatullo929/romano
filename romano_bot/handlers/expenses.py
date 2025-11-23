@@ -18,11 +18,18 @@ class ExpensesHandler:
     """Handle expenses-related operations"""
     
     def __init__(self):
+        # Main keyboard for admins (with reports)
         self.main_keyboard = ReplyKeyboardMarkup([
             ['🛒 Закуп', '👥 Зарплата'],
             ['📉 Списание', '📊 Расходы за день'],
             ['📈 Расходы за неделю', '📅 Расходы за месяц'],
             ['🔙 Главное меню']
+        ], resize_keyboard=True)
+        
+        # Main keyboard for baristas (only expense categories)
+        self.barista_keyboard = ReplyKeyboardMarkup([
+            ['🛒 Закуп', '👥 Зарплата'],
+            ['📉 Списание', '🔙 Главное меню']
         ], resize_keyboard=True)
         
         self.categories_keyboard = ReplyKeyboardMarkup([
@@ -39,16 +46,56 @@ class ExpensesHandler:
             ['🔙 Главное меню']
         ], resize_keyboard=True)
     
+    def _get_expenses_keyboard(self, user) -> ReplyKeyboardMarkup:
+        """
+        Get appropriate expenses keyboard based on user role.
+        
+        Args:
+            user: User object from database
+            
+        Returns:
+            ReplyKeyboardMarkup: Keyboard for baristas or admins
+        """
+        if user and user.is_barista():
+            return self.barista_keyboard
+        return self.main_keyboard
+    
     async def show_expenses_menu(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        """Show expenses menu"""
+        """
+        Show expenses menu.
+        
+        Shows different menu for baristas (only expense categories) 
+        and admins (with reports).
+        """
         # Clear any active expense state when returning to menu
         context.user_data.pop('expense_data', None)
         context.user_data.pop('state', None)
         
+        # Get user from context to determine role
+        user = getattr(context, 'user', None)
+        if not user:
+            from ..utils.helpers import AuthManager
+            user = AuthManager.get_user(update.effective_user.id)
+        
+        # Determine which keyboard to show based on user role
+        if user and user.is_barista():
+            # Baristas see only expense categories
+            keyboard = self.barista_keyboard
+            message = (
+                "💸 <b>Управление расходами</b>\n\n"
+                "Выберите тип расхода:"
+            )
+        else:
+            # Admins see full menu with reports
+            keyboard = self.main_keyboard
+            message = (
+                "💸 <b>Управление расходами</b>\n\n"
+                "Выберите тип расхода или просмотр отчетов:"
+            )
+        
         await update.message.reply_text(
-            "💸 <b>Управление расходами</b>\n\n"
-            "Выберите тип расхода:",
-            reply_markup=self.main_keyboard,
+            message,
+            reply_markup=keyboard,
             parse_mode='HTML'
         )
     
@@ -252,9 +299,16 @@ class ExpensesHandler:
         if choice == "✅ Подтвердить":
             await self._save_expense(update, context)
         elif choice == "❌ Отменить":
+            # Get user to determine correct keyboard
+            user = getattr(context, 'user', None)
+            if not user:
+                from ..utils.helpers import AuthManager
+                user = AuthManager.get_user(update.effective_user.id)
+            
+            keyboard = self._get_expenses_keyboard(user)
             await update.message.reply_text(
                 "❌ Расход отменен.",
-                reply_markup=self.main_keyboard
+                reply_markup=keyboard
             )
             context.user_data.pop('expense_data', None)
             context.user_data.pop('state', None)
@@ -360,9 +414,11 @@ class ExpensesHandler:
             message += f"🕐 <b>Время:</b> {expense_timestamp.strftime('%d.%m.%Y %H:%M')}\n\n"
             message += f"💰 <b>Текущий баланс:</b> {format_currency(current_balance)}"
             
+            # Get appropriate keyboard based on user role
+            keyboard = self._get_expenses_keyboard(user)
             await update.message.reply_text(
                 message,
-                reply_markup=self.main_keyboard,
+                reply_markup=keyboard,
                 parse_mode='HTML'
             )
             
@@ -371,14 +427,34 @@ class ExpensesHandler:
             context.user_data.pop('state', None)
             
         except Exception as e:
+            # Get user to determine correct keyboard
+            user = getattr(context, 'user', None)
+            if not user:
+                from ..utils.helpers import AuthManager
+                user = AuthManager.get_user(update.effective_user.id)
+            
+            keyboard = self._get_expenses_keyboard(user)
             await update.message.reply_text(
                 f"❌ Ошибка при сохранении расхода: {str(e)}\n\n"
                 "Попробуйте еще раз.",
-                reply_markup=self.main_keyboard
+                reply_markup=keyboard
             )
     
     async def get_daily_expenses(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        """Get daily expenses report"""
+        """Get daily expenses report (admin only)"""
+        # Check if user is admin
+        user = getattr(context, 'user', None)
+        if not user:
+            from ..utils.helpers import AuthManager
+            user = AuthManager.get_user(update.effective_user.id)
+        
+        if not user or not user.is_admin():
+            await update.message.reply_text(
+                "❌ У вас нет прав для просмотра отчетов о расходах.",
+                reply_markup=self._get_expenses_keyboard(user)
+            )
+            return
+        
         today = datetime.now().date()
         
         with get_session() as session:
@@ -435,7 +511,20 @@ class ExpensesHandler:
             )
     
     async def get_weekly_expenses(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        """Get weekly expenses report"""
+        """Get weekly expenses report (admin only)"""
+        # Check if user is admin
+        user = getattr(context, 'user', None)
+        if not user:
+            from ..utils.helpers import AuthManager
+            user = AuthManager.get_user(update.effective_user.id)
+        
+        if not user or not user.is_admin():
+            await update.message.reply_text(
+                "❌ У вас нет прав для просмотра отчетов о расходах.",
+                reply_markup=self._get_expenses_keyboard(user)
+            )
+            return
+        
         from datetime import timedelta
         
         end_date = datetime.now().date()
@@ -484,7 +573,20 @@ class ExpensesHandler:
             )
     
     async def get_monthly_expenses(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        """Get monthly expenses report"""
+        """Get monthly expenses report (admin only)"""
+        # Check if user is admin
+        user = getattr(context, 'user', None)
+        if not user:
+            from ..utils.helpers import AuthManager
+            user = AuthManager.get_user(update.effective_user.id)
+        
+        if not user or not user.is_admin():
+            await update.message.reply_text(
+                "❌ У вас нет прав для просмотра отчетов о расходах.",
+                reply_markup=self._get_expenses_keyboard(user)
+            )
+            return
+        
         today = datetime.now().date()
         month_start = today.replace(day=1)
         
